@@ -1,0 +1,40 @@
+.TH CHANGE_IP 8 "August 2026" "change_ip 2.6.0" "System Administration"
+.SH NAME
+change_ip \- make a provider-issued IPv4 the default outbound source
+.SH SYNOPSIS
+.B change_ip
+.br
+.B change_ip
+.RB [ status | doctor | rollback ]
+.br
+.B change_ip
+.I NEW_IP[/PREFIX]
+.RI [ INTERFACE ]
+.SH DESCRIPTION
+Adds or reuses a provider-issued IPv4 address and makes it the explicit source
+of the default IPv4 route. Existing addresses on the interface are kept.
+.PP
+The gateway and prefix must come from the hosting provider when the address is
+not already configured. The script does not order addresses, open ports,
+configure Docker, or configure a firewall.
+.PP
+On Debian and Ubuntu, persistence is a generated systemd oneshot service. It
+runs after the network is online, adds the selected address, and restores the
+selected gateway and source address. The script never reboots the machine
+automatically.
+.PP
+With no arguments, an interactive wizard asks for the missing values.
+.B status
+shows the current source and persistence state.
+.B doctor
+checks the generated service.
+.B rollback
+restores the selected backup and the saved runtime route when available.
+.SH EXAMPLES
+.nf
+sudo change_ip
+sudo change_ip status
+sudo change_ip --dry-run 45.145.40.68/27 --gateway 45.145.40.65 -i enp1s0f0
+.fi
+.SH SEE ALSO
+ip(8), systemd(1), systemd-run(1)

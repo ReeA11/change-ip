@@ -1,0 +1,19 @@
+# Operating systems and editors
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local Codex metadata
+.codex/
+.agents/
+
+# Temporary and patch files
+*.tmp
+*.bak
+*.orig
+*.rej
