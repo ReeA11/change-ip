@@ -42,18 +42,6 @@ sudo change-ip rollback
 
 Для SSH-запуска используется transient `systemd-run`, если он доступен. `--dry-run` выполняет только discovery, validation и planning: backup и системные файлы не создаются.
 
-## Сборка и тесты
-
-```bash
-CGO_ENABLED=0 go test ./...
-CGO_ENABLED=0 go vet ./...
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/change-ip-linux-amd64 ./cmd/change-ip
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/change-ip-linux-arm64 ./cmd/change-ip
-sudo unshare --mount --net bash -c 'mount -t tmpfs tmpfs /run && mkdir -p /run/netns && CGO_ENABLED=0 go test -count=1 -tags=integration ./integration'
-```
-
-Integration tests создают disposable network namespaces/veth и требуют root/CAP_NET_ADMIN. В репозитории остаётся только Go implementation; поведенческий inventory 2.6 сохранён как миграционная документация.
-
 ---
 
 ## English
