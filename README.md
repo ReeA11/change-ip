@@ -1,113 +1,57 @@
-<p align="center">
-  <img src="assets/readme-header.png" alt="ChangeIP">
-</p>
+<p align="center"><img src="assets/readme-header.png" alt="ChangeIP"></p>
 
-<h1 align="center">ChangeIP</h1>
+# ChangeIP 3.0
 
-<p align="center">
-  Делает выданный провайдером IPv4 основным адресом исходящего трафика
-</p>
+ChangeIP делает выданный провайдером IPv4 явным source-адресом default route Linux-сервера.
 
-<p align="center">Русский · <a href="#english-version">English</a></p>
+Существующие IPv4 сохраняются; IPv6, firewall, Docker и provider configuration не изменяются. ChangeIP не перезагружает сервер.
 
-ChangeIP переключает IPv4, с которого уходит исходящий трафик. Адрес уже может висеть на интерфейсе — или его нужно сначала добавить локально.
-
-Скрипт не заказывает адреса у провайдера, не открывает порты, не настраивает Docker и не трогает firewall. Уже существующие адреса не удаляет.
-
-## Установка из локальной копии
+## Установка
 
 ```bash
-sudo bash ./install.sh
-sudo change_ip
+curl -fsSL https://raw.githubusercontent.com/ReeA11/change-ip/master/install.sh | sudo sh
 ```
 
-## Установка на новый VDS из raw
-
+## Обновление
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ReeA11/change-ip/master/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/ReeA11/change-ip/master/update.sh | sudo sh
 ```
-
-Инсталлятор ничего не меняет в сети. После установки запустите `sudo change_ip`.
 
 ## Использование
 
-Интерактивный мастер:
-
 ```bash
-sudo change_ip
+sudo change-ip
+sudo change-ip 176.96.136.246/25 --gateway 176.96.136.129 --interface eth0
+sudo change-ip --dry-run 176.96.136.246/25 --gateway 176.96.136.129
+sudo change-ip status
+sudo change-ip doctor
+sudo change-ip rollback
 ```
 
-Предпросмотр и применение из командной строки:
+Поддерживаются `--prefix`, `--profile`, `--runtime-only`, `--yes`, `--check-egress`, `--verbose` и positional interface старого CLI. Для нового адреса prefix обязателен: ChangeIP его не угадывает. Формат profile:
 
-```bash
-sudo change_ip --dry-run 111.222.111.222/27 --gateway 111.222.111.222 -i enp1s0f0
-sudo change_ip 111.222.111.222/27 --gateway 111.222.111.222 -i enp1s0f0
+```text
+# IP/PREFIX          GATEWAY
+176.96.136.246/25    176.96.136.129
 ```
 
-Для нового адреса префикс и шлюз берите из панели провайдера. Скрипт их сам не угадывает.
+Профиль не может быть group/world-writable. Gateway вне prefix и `/32` поддерживаются через link-scope host route и `onlink`. Metric и routing table выбранного default route сохраняются. При нескольких default routes выбирается допустимый маршрут с лучшим metric; явно указанный interface ограничивает выбор.
 
-Полезные команды:
+Без `--runtime-only` создаются versioned JSON backup в `/root/change-ip-backup.*`, apply-config в `/usr/local/lib/change-ip/` и systemd oneshot в `/etc/systemd/system/`. Unit запускает сам Go-бинарник после поднятия сети — shell apply-script не используется. Ошибка runtime, persistence или critical verification запускает rollback. Pending manifest позволяет `doctor` обнаружить оборванную операцию.
 
-```bash
-sudo change_ip status
-sudo change_ip doctor
-sudo change_ip rollback
-```
-
-На Debian и Ubuntu постоянство обеспечивается сгенерированным systemd-сервисом. После поднятия сети он добавляет выбранный адрес и явно выставляет маршрут по умолчанию, шлюз и source IP. Машину скрипт сам не перезагружает.
-
-Поддерживается только IPv4. IPv6 не затрагивается.
+Для SSH-запуска используется transient `systemd-run`, если он доступен. `--dry-run` выполняет только discovery, validation и planning: backup и системные файлы не создаются.
 
 ---
 
-## English version
+## English
 
-ChangeIP makes a provider-assigned IPv4 address the default source for outgoing traffic. The address may already be present on the interface, or it may need to be added locally first.
+ChangeIP makes a provider-assigned IPv4 the explicit source of a Linux server's default route. 
 
-The script does not request addresses from the provider, open ports, configure Docker, or change the firewall. Existing addresses are not removed.
+Existing IPv4 addresses are preserved. IPv6, firewall, Docker, provider configuration, and reboot are left alone. A prefix is mandatory for a new address and is never guessed. Off-subnet gateways and `/32` addresses use a link-scope host route plus `onlink`; the selected route's metric and table are preserved.
 
-### Install from a local copy
+The commands and flags are shown above. With no arguments, an interactive wizard starts. Persistence is a systemd oneshot invoking the Go binary with strict JSON configuration. Changes are backed up under `/root/change-ip-backup.*`; failures trigger rollback. `status` reports runtime and desired boot state, and `doctor` reports drift, failed/missing units, and unfinished transactions.
 
-```bash
-sudo bash ./install.sh
-sudo change_ip
-```
+The release installer selects amd64 or arm64 and verifies checksums. It never builds on the target host or changes the network.
 
-### Install on a new VDS from raw
-
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ReeA11/change-ip/master/install.sh | sudo bash
-```
-
-The installer does not change the network. Run `sudo change_ip` after installation.
-
-### Usage
-
-Interactive wizard:
-
-```bash
-sudo change_ip
-```
-
-Preview and apply from the command line:
-
-```bash
-sudo change_ip --dry-run 111.222.111.222/27 --gateway 111.222.111.222 -i enp1s0f0
-sudo change_ip 111.222.111.222 --gateway 111.222.111.222 -i enp1s0f0
-```
-
-For a new address, get the prefix and gateway from the provider panel. The script does not guess them.
-
-Useful commands:
-
-```bash
-sudo change_ip status
-sudo change_ip doctor
-sudo change_ip rollback
-```
-
-On Debian and Ubuntu, persistence is provided by a generated systemd service. After the network is up, it adds the selected address and explicitly restores the default route, gateway, and source IP. The script never reboots the machine.
-
-Only IPv4 is supported. IPv6 is left untouched.
+To upgrade or migrate a pre-3.0 Bash installation, run `curl -fsSL https://raw.githubusercontent.com/ReeA11/change-ip/master/update.sh | sudo sh`. The verified Go binary is installed atomically before legacy commands are removed or replaced with compatibility symlinks.

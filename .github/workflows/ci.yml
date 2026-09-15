@@ -1,0 +1,41 @@
+name: CI
+on:
+  push:
+    branches: [master]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.24.x'}
+      - name: gofmt
+        run: test -z "$(find cmd internal integration -name '*.go' -print0 | xargs -0 gofmt -l)"
+      - name: Shell syntax
+        run: sh -n install.sh update.sh tests/install_test.sh
+      - run: CGO_ENABLED=0 go vet ./...
+      - run: CGO_ENABLED=0 go test ./...
+      - name: Static cross-builds
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.version=3.0.0-ci" -o dist/change-ip-linux-amd64 ./cmd/change-ip
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.version=3.0.0-ci" -o dist/change-ip-linux-arm64 ./cmd/change-ip
+          cp man/change_ip.8 dist/change-ip.8
+          cp install.sh update.sh dist/
+          file dist/change-ip-linux-* | tee /tmp/file-output
+          if grep -q 'dynamically linked' /tmp/file-output; then exit 1; fi
+          ./tests/install_test.sh
+          cd dist && sha256sum change-ip-linux-* change-ip.8 install.sh update.sh > checksums.txt
+      - uses: actions/upload-artifact@v4
+        with: {name: change-ip-linux, path: dist/}
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.24.x'}
+      - name: Build integration test binary
+        run: CGO_ENABLED=0 go test -c -tags=integration -o /tmp/change-ip-integration.test ./integration
+      - name: Disposable namespace integration tests
+        run: sudo unshare --mount --net bash -c 'mount -t tmpfs tmpfs /run && mkdir -p /run/netns && exec /tmp/change-ip-integration.test -test.count=1 -test.v -test.run TestNetworkNamespaceTransactions'

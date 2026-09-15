@@ -1,40 +1,80 @@
-.TH CHANGE_IP 8 "August 2026" "change_ip 2.6.0" "System Administration"
+.TH CHANGE-IP 8 "September 2026" "ChangeIP 3.0" "System Administration"
 .SH NAME
-change_ip \- make a provider-issued IPv4 the default outbound source
+change-ip \- make a provider-issued IPv4 the default outbound source
 .SH SYNOPSIS
-.B change_ip
+.B change-ip
 .br
-.B change_ip
+.B change-ip
 .RB [ status | doctor | rollback ]
 .br
-.B change_ip
+.B change-ip
 .I NEW_IP[/PREFIX]
 .RI [ INTERFACE ]
+.RI [ options ]
 .SH DESCRIPTION
-Adds or reuses a provider-issued IPv4 address and makes it the explicit source
-of the default IPv4 route. Existing addresses on the interface are kept.
+Adds or reuses an IPv4 address and makes it the explicit source of the selected
+default IPv4 route through Linux netlink. Existing addresses and IPv6 are kept.
+Metric and routing table are preserved. Off-subnet and /32 gateways use a
+link-scope host route and onlink.
 .PP
-The gateway and prefix must come from the hosting provider when the address is
-not already configured. The script does not order addresses, open ports,
-configure Docker, or configure a firewall.
-.PP
-On Debian and Ubuntu, persistence is a generated systemd oneshot service. It
-runs after the network is online, adds the selected address, and restores the
-selected gateway and source address. The script never reboots the machine
-automatically.
-.PP
-With no arguments, an interactive wizard asks for the missing values.
-.B status
-shows the current source and persistence state.
-.B doctor
-checks the generated service.
-.B rollback
-restores the selected backup and the saved runtime route when available.
-.SH EXAMPLES
-.nf
-sudo change_ip
-sudo change_ip status
-sudo change_ip --dry-run 45.145.40.68/27 --gateway 45.145.40.65 -i enp1s0f0
-.fi
+Persistence is a generated systemd oneshot invoking ChangeIP after
+network-online.target. It does not replace cloud-init, Netplan, NetworkManager,
+systemd-networkd, or ifupdown configuration.
+.SH COMMANDS
+.TP
+.B status [INTERFACE]
+Show addresses, outbound source, gateway, default route, desired boot state,
+and systemd unit state.
+.TP
+.B doctor [INTERFACE]
+Diagnose drift, missing/failed configuration, and unfinished transactions.
+.TP
+.B rollback [BACKUP_DIR]
+Restore a versioned JSON backup. Without a directory, show a TTY menu.
+.SH OPTIONS
+.TP
+.BR --gateway , " -g " GW
+Set the IPv4 gateway.
+.TP
+.BR --interface , " -i " IFACE
+Use an explicit validated interface.
+.TP
+.BR --prefix , " -p " N
+Set prefix length for an address without /N.
+.TP
+.B --dry-run
+Discover, validate, snapshot, and plan without changing state.
+.TP
+.B --runtime-only
+Skip backup and persistence.
+.TP
+.BR --yes , " -y"
+Skip confirmation.
+.TP
+.B --check-egress
+Also check the route to 8.8.8.8 and an external IPv4 API. API failure is only a warning.
+.TP
+.BI --profile " FILE"
+Read strict IP/PREFIX and optional gateway entries.
+.SH FILES
+.I /etc/change-ip-addresses.conf
+.br
+.I /usr/local/lib/change-ip/apply-IFACE.json
+.br
+.I /etc/systemd/system/change-ip-IFACE.service
+.br
+.I /root/change-ip-backup.*/manifest.json
+.SH UPDATE
+Run the checksum-verifying updater from a local checkout with
+.B sudo ./update.sh
+or fetch it from the repository. The new ELF is validated and atomically
+installed before pre-3.0 scripts are removed. Compatibility names
+.B change_ip
+and
+.B /usr/local/sbin/change-ip
+are symlinks to the canonical /usr/local/bin/change-ip binary.
+.SH SAFETY
+Mutations hold /run/change-ip.lock. SIGINT, SIGTERM, and SIGHUP cause rollback
+when possible. Interactive apply uses systemd-run when available for SSH safety.
 .SH SEE ALSO
-ip(8), systemd(1), systemd-run(1)
+systemd(1), systemd-run(1), ip-route(8)

@@ -17,3 +17,6 @@ Desktop.ini
 *.bak
 *.orig
 *.rej
+.tools/
+dist/
+/change-ip
