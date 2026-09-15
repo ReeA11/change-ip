@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net/netip"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/ReeA11/change-ip/internal/config"
 	"github.com/ReeA11/change-ip/internal/network"
 	"github.com/ReeA11/change-ip/internal/platform"
+	"github.com/ReeA11/change-ip/internal/updater"
 )
 
 var version = "3.0.0-dev"
@@ -29,6 +31,7 @@ Usage:
   change-ip status [IFACE]
   change-ip doctor [IFACE]
   change-ip rollback [BACKUP_DIR]
+  change-ip update
 
 Options:
   --gateway, -g GW       gateway IPv4
@@ -271,6 +274,31 @@ func main() {
 	}
 	var runErr error
 	switch cmd {
+	case "update":
+		if len(args) != 1 {
+			runErr = fmt.Errorf("update does not accept arguments")
+			break
+		}
+		if os.Geteuid() != 0 {
+			runErr = fmt.Errorf("run as root: sudo change-ip update")
+			break
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-sig:
+				cancel()
+			case <-done:
+			}
+		}()
+		u := updater.New(updater.Config{CurrentVersion: version, Out: os.Stdout})
+		runErr = withLock(func() error {
+			_, updateErr := u.Run(ctx)
+			return updateErr
+		})
+		close(done)
+		cancel()
 	case "status", "doctor":
 		iface := ""
 		if len(args) > 1 {

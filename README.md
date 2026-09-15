@@ -15,6 +15,10 @@ curl -fsSL https://raw.githubusercontent.com/ReeA11/change-ip/master/install.sh 
 ## Обновление
 
 ```bash
+sudo change-ip update
+```
+
+```bash
 curl -fsSL https://raw.githubusercontent.com/ReeA11/change-ip/master/update.sh | sudo sh
 ```
 
@@ -27,6 +31,7 @@ sudo change-ip --dry-run 176.96.136.246/25 --gateway 176.96.136.129
 sudo change-ip status
 sudo change-ip doctor
 sudo change-ip rollback
+sudo change-ip update
 ```
 
 Поддерживаются `--prefix`, `--profile`, `--runtime-only`, `--yes`, `--check-egress`, `--verbose` и positional interface старого CLI. Для нового адреса prefix обязателен: ChangeIP его не угадывает. Формат profile:
@@ -42,6 +47,8 @@ sudo change-ip rollback
 
 Для SSH-запуска используется transient `systemd-run`, если он доступен. `--dry-run` выполняет только discovery, validation и planning: backup и системные файлы не создаются.
 
+`sudo change-ip update` скачивает latest release для текущей архитектуры с GitHub, проверяет SHA-256 по release-файлу `checksums.txt` и атомарно заменяет бинарник.
+
 ---
 
 ## English
@@ -52,4 +59,4 @@ Existing IPv4 addresses are preserved. IPv6, firewall, Docker, provider configur
 
 The commands and flags are shown above. With no arguments, an interactive wizard starts. Persistence is a systemd oneshot invoking the Go binary with strict JSON configuration. Changes are backed up under `/root/change-ip-backup.*`; failures trigger rollback. `status` reports runtime and desired boot state, and `doctor` reports drift, failed/missing units, and unfinished transactions.
 
-The release installer selects amd64 or arm64 and verifies checksums. It never builds on the target host or changes the network.
+The release installer selects amd64 or arm64 and verifies checksums. It never builds on the target host or changes the network. `sudo change-ip update` performs the same checksum-verified atomic binary update directly from the latest GitHub Release.

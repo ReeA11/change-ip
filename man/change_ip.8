@@ -5,7 +5,7 @@ change-ip \- make a provider-issued IPv4 the default outbound source
 .B change-ip
 .br
 .B change-ip
-.RB [ status | doctor | rollback ]
+.RB [ status | doctor | rollback | update ]
 .br
 .B change-ip
 .I NEW_IP[/PREFIX]
@@ -31,6 +31,11 @@ Diagnose drift, missing/failed configuration, and unfinished transactions.
 .TP
 .B rollback [BACKUP_DIR]
 Restore a versioned JSON backup. Without a directory, show a TTY menu.
+.TP
+.B update
+Download the latest GitHub Release for the current architecture, verify its
+SHA-256 checksum, and atomically install it. Requires root and does not change
+network state.
 .SH OPTIONS
 .TP
 .BR --gateway , " -g " GW
@@ -65,7 +70,10 @@ Read strict IP/PREFIX and optional gateway entries.
 .br
 .I /root/change-ip-backup.*/manifest.json
 .SH UPDATE
-Run the checksum-verifying updater from a local checkout with
+Run
+.B sudo change-ip update
+to install the latest checksum-verified GitHub Release directly. For initial
+installation or recovery, run the updater from a local checkout with
 .B sudo ./update.sh
 or fetch it from the repository. The new ELF is validated and atomically
 installed before pre-3.0 scripts and deprecated
