@@ -26,11 +26,27 @@ import (
 type Options struct {
 	Target, Prefix, Gateway, Interface, Profile    string
 	DryRun, RuntimeOnly, Yes, CheckEgress, Verbose bool
+	Progress                                       func(string)
 }
+
+const (
+	ProgressAddress     = "address"
+	ProgressGateway     = "gateway-route"
+	ProgressDefault     = "default-route"
+	ProgressPersistence = "persistence"
+	ProgressVerify      = "verification"
+)
+
+func progress(o Options, stage string) {
+	if o.Progress != nil {
+		o.Progress(stage)
+	}
+}
+
 type Application struct {
 	Net        network.Backend
 	Binary     string
-	Out, Err   *os.File
+	Out, Err   io.Writer
 	BackupRoot string
 }
 
@@ -135,13 +151,13 @@ func (a *Application) Resolve(o Options) (transaction.Plan, error) {
 	}
 	return transaction.BuildPlan(before, target, gw)
 }
-func printPlan(out *os.File, p transaction.Plan, runtimeOnly bool) {
+func printPlan(out io.Writer, p transaction.Plan, runtimeOnly bool) {
 	fmt.Fprintf(out, "\nChangeIP plan\n  Interface : %s\n  Old source: %s\n  New IP    : %s\n  Gateway   : %s\n  Metric    : %d\n  Table     : %d\n  On-link   : %t\n  Add IP    : %t\n  Persist   : %t\n\n", p.Before.Interface, p.Before.OutboundSource, p.Target.OutboundSource, p.Target.DefaultRoute.Gateway, p.Target.DefaultRoute.Metric, p.Target.DefaultRoute.Table, p.Target.DefaultRoute.OnLink, p.AddressToAdd != nil, !runtimeOnly)
 	if p.Before.DefaultRoute.Gateway != p.Target.DefaultRoute.Gateway {
 		fmt.Fprintln(out, "[WARNING] Gateway changes; a wrong provider gateway can disconnect the server.")
 	}
 }
-func confirm(in *os.File, out *os.File) bool {
+func confirm(in io.Reader, out io.Writer) bool {
 	fmt.Fprint(out, "Apply network change? [y/N] ")
 	s := bufio.NewScanner(in)
 	return s.Scan() && (s.Text() == "y" || s.Text() == "Y")
@@ -262,6 +278,13 @@ func (a *Application) Apply(o Options, signals <-chan os.Signal) (backupDir stri
 		}
 		return backupDir, e
 	}
+	if p.AddressToAdd != nil {
+		progress(o, ProgressAddress)
+	}
+	if p.HostRouteToAdd != nil {
+		progress(o, ProgressGateway)
+	}
+	progress(o, ProgressDefault)
 	if signalErr := checkSignal(); signalErr != nil {
 		return backupDir, rollback(signalErr)
 	}
@@ -279,6 +302,7 @@ func (a *Application) Apply(o Options, signals <-chan os.Signal) (backupDir stri
 		if e = ps.Enable(unit); e != nil {
 			return backupDir, rollback(e)
 		}
+		progress(o, ProgressPersistence)
 		if signalErr := checkSignal(); signalErr != nil {
 			return backupDir, rollback(signalErr)
 		}
@@ -286,6 +310,7 @@ func (a *Application) Apply(o Options, signals <-chan os.Signal) (backupDir stri
 	if e = tx.Verify(); e != nil {
 		return backupDir, rollback(fmt.Errorf("verification failed: %w", e))
 	}
+	progress(o, ProgressVerify)
 	if o.CheckEgress {
 		a.checkEgress(p.Target.OutboundSource, p.Target.Interface)
 	}
@@ -333,14 +358,7 @@ func (a *Application) checkEgress(source netip.Addr, iface string) {
 }
 
 func (a *Application) Status(iface string, doctor bool) error {
-	if iface == "" {
-		x, e := a.interfaceFor("")
-		if e != nil {
-			return e
-		}
-		iface = x
-	}
-	s, e := diagnostics.Collect(a.Net, iface, a.Binary)
+	s, e := a.Collect(iface)
 	if e != nil {
 		return e
 	}
@@ -379,6 +397,22 @@ func (a *Application) Status(iface string, doctor bool) error {
 		}
 	}
 	return nil
+}
+
+// Collect returns fresh structured runtime and persistence diagnostics for UI clients.
+func (a *Application) Collect(iface string) (diagnostics.Status, error) {
+	if iface == "" {
+		x, e := a.interfaceFor("")
+		if e != nil {
+			return diagnostics.Status{}, e
+		}
+		iface = x
+	}
+	s, e := diagnostics.Collect(a.Net, iface, a.Binary)
+	if e != nil {
+		return diagnostics.Status{}, e
+	}
+	return s, nil
 }
 
 func validBackupDir(root, dir string) bool {

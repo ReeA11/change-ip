@@ -36,21 +36,21 @@ func TestUpdateInstallsLatestAndRemovesUnderscoreCommands(t *testing.T) {
 		BaseURL:        "https://release.invalid",
 		Prefix:         prefix,
 		Arch:           "amd64",
-		CurrentVersion: "3.0.0",
+		CurrentVersion: "3.0.1",
 		Client:         client,
 		ValidateBinary: func(path string) (string, error) {
 			got, err := os.ReadFile(path)
 			if err != nil || string(got) != string(binary) {
 				return "", fmt.Errorf("unexpected candidate")
 			}
-			return "3.1.0", nil
+			return "3.0.2", nil
 		},
 	})
 	version, err := u.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != "3.1.0" {
+	if version != "3.0.2" {
 		t.Fatalf("version = %q", version)
 	}
 	installed, err := os.ReadFile(filepath.Join(prefix, "bin", "change-ip"))

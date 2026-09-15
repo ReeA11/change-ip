@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -14,13 +13,14 @@ import (
 	"syscall"
 
 	"github.com/ReeA11/change-ip/internal/app"
-	"github.com/ReeA11/change-ip/internal/config"
 	"github.com/ReeA11/change-ip/internal/network"
 	"github.com/ReeA11/change-ip/internal/platform"
+	"github.com/ReeA11/change-ip/internal/ui"
 	"github.com/ReeA11/change-ip/internal/updater"
 )
 
-var version = "3.0.0-dev"
+// Release builds override this value from the Git tag with -ldflags.
+var version = "3.0.2-dev"
 
 func usage() {
 	fmt.Printf(`change-ip %s — make a provider-assigned IPv4 the outbound source
@@ -126,85 +126,6 @@ func readLine(prompt string) (string, error) {
 		return "", fmt.Errorf("input ended")
 	}
 	return strings.TrimSpace(s.Text()), nil
-}
-func wizard(a *app.Application, b network.Backend, signals <-chan os.Signal) error {
-	if !isTerminal() {
-		return fmt.Errorf("no TTY; pass NEW_IP/PREFIX on the command line")
-	}
-	routes, e := b.DefaultRoutes()
-	if e != nil {
-		return e
-	}
-	def, e := network.SelectDefault(routes, "")
-	if e != nil {
-		return e
-	}
-	state, e := b.Snapshot(def.Interface)
-	if e != nil {
-		return e
-	}
-	fmt.Printf("Interface: %s\nCurrent source: %s\nExisting IPv4:\n", state.Interface, state.OutboundSource)
-	for i, x := range state.Addresses {
-		mark := ""
-		if x.Prefix.Addr() == state.OutboundSource {
-			mark = " (current source)"
-		}
-		fmt.Printf("  %d) %s%s\n", i+1, x.Prefix, mark)
-	}
-	fmt.Printf("  %d) Add an IP from the provider panel\n", len(state.Addresses)+1)
-	pick, e := readLine("Number: ")
-	if e != nil {
-		return e
-	}
-	n, e := strconv.Atoi(pick)
-	if e != nil || n < 1 || n > len(state.Addresses)+1 {
-		return fmt.Errorf("invalid selection")
-	}
-	o := app.Options{Interface: state.Interface, Profile: "/etc/change-ip-addresses.conf"}
-	if n <= len(state.Addresses) {
-		o.Target = state.Addresses[n-1].Prefix.String()
-	} else {
-		ip, e := readLine("IPv4 from panel: ")
-		if e != nil {
-			return e
-		}
-		x, parseIPError := netip.ParseAddr(ip)
-		if parseIPError != nil || !x.Is4() {
-			return fmt.Errorf("invalid IPv4")
-		}
-		o.Target = ip
-		if entries, loadErr := config.LoadProfile(o.Profile); loadErr == nil {
-			if entry, ok := entries[x]; ok {
-				o.Target = entry.Prefix.String()
-				if entry.Gateway.IsValid() {
-					o.Gateway = entry.Gateway.String()
-				}
-			}
-		}
-		if !strings.Contains(o.Target, "/") {
-			prefix, e := readLine("Prefix (1-32): ")
-			if e != nil {
-				return e
-			}
-			o.Prefix = prefix
-		}
-	}
-	targetPrefix, parseErr := netip.ParsePrefix(o.Target)
-	if parseErr != nil && o.Prefix != "" {
-		targetPrefix, parseErr = netip.ParsePrefix(o.Target + "/" + strings.TrimPrefix(o.Prefix, "/"))
-	}
-	if o.Gateway == "" && state.DefaultRoute.Gateway.IsValid() && parseErr == nil && !targetPrefix.Contains(state.DefaultRoute.Gateway) {
-		g, e := readLine("Gateway from provider panel (required for this subnet): ")
-		if e != nil {
-			return e
-		}
-		if g == "" {
-			return fmt.Errorf("gateway is required")
-		}
-		o.Gateway = g
-	}
-	_, e = a.Apply(o, signals)
-	return e
 }
 func isTerminal() bool { st, e := os.Stdin.Stat(); return e == nil && st.Mode()&os.ModeCharDevice != 0 }
 
@@ -354,11 +275,15 @@ func main() {
 		}
 		runErr = withLock(func() error { return a.ApplyProfile(filepath.Clean(path)) })
 	case "wizard", "--tui":
+		if !ui.CanRun(os.Stdin, os.Stdout) {
+			runErr = fmt.Errorf("interactive mode requires TTY stdin and stdout")
+			break
+		}
 		if e := maybeSystemdRun(args); e != nil {
 			runErr = e
 			break
 		}
-		runErr = withLock(func() error { return wizard(a, backend, sig) })
+		runErr = withLock(func() error { return ui.Run(a, version, sig) })
 	case "apply":
 		o, parseErr := parseApply(args[1:])
 		if parseErr != nil {
