@@ -1,0 +1,21 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions: {contents: write}
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.24.x'}
+      - run: |
+          mkdir dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o dist/change-ip-linux-amd64 ./cmd/change-ip
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o dist/change-ip-linux-arm64 ./cmd/change-ip
+          cp man/change_ip.8 dist/change-ip.8
+          cp install.sh update.sh dist/
+          cd dist && sha256sum change-ip-linux-* change-ip.8 install.sh update.sh > checksums.txt
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+        env: {GH_TOKEN: '${{ github.token }}'}
