@@ -40,3 +40,21 @@ done
 
 chmod 0755 "$tmp/$artifact" "$tmp/install.sh"
 CHANGE_IP_MAN_FILE="$tmp/change-ip.8" sh "$tmp/install.sh" "$tmp/$artifact"
+
+# Keep this post-condition in the updater too. It also cleans underscore aliases
+# when this updater is used to bootstrap from an older release installer.
+target_prefix=${PREFIX:-/usr/local}
+for deprecated in "$target_prefix/bin/change_ip" "$target_prefix/sbin/change_ip"; do
+  if [ -e "$deprecated" ] || [ -L "$deprecated" ]; then
+    echo "[change-ip updater] Removing deprecated ChangeIP command: $deprecated"
+    rm -f -- "$deprecated"
+  fi
+done
+if [ "$target_prefix" = /usr/local ]; then
+  for deprecated in /usr/bin/change_ip /usr/sbin/change_ip; do
+    if [ -e "$deprecated" ] || [ -L "$deprecated" ]; then
+      echo "[change-ip updater] Removing deprecated ChangeIP command: $deprecated"
+      rm -f -- "$deprecated"
+    fi
+  done
+fi

@@ -103,7 +103,7 @@ is_legacy_change_ip() {
 
 migrate_legacy_path() {
   legacy=$1
-	[ "$legacy" = "$canonical" ] && return 0
+  [ "$legacy" = "$canonical" ] && return 0
   if is_legacy_change_ip "$legacy"; then
     log "Removing legacy ChangeIP command: $legacy"
     rm -f -- "$legacy"
@@ -115,22 +115,30 @@ migrate_legacy_path() {
   fi
 }
 
-for legacy in "$PREFIX/sbin/change-ip" "$PREFIX/bin/change_ip" "$PREFIX/sbin/change_ip"; do
-  migrate_legacy_path "$legacy"
+for legacy in "$PREFIX/bin/change_ip" "$PREFIX/sbin/change_ip"; do
+  if [ -e "$legacy" ] || [ -L "$legacy" ]; then
+    log "Removing deprecated ChangeIP command: $legacy"
+    rm -f -- "$legacy"
+  fi
 done
+migrate_legacy_path "$PREFIX/sbin/change-ip"
 if [ "$PREFIX" = /usr/local ]; then
-  for legacy in /usr/bin/change-ip /usr/sbin/change-ip /usr/bin/change_ip /usr/sbin/change_ip; do
+  for legacy in /usr/bin/change_ip /usr/sbin/change_ip; do
+    if [ -e "$legacy" ] || [ -L "$legacy" ]; then
+      log "Removing deprecated ChangeIP command: $legacy"
+      rm -f -- "$legacy"
+    fi
+  done
+  for legacy in /usr/bin/change-ip /usr/sbin/change-ip; do
     migrate_legacy_path "$legacy"
   done
 fi
 
-ln -s change-ip "$PREFIX/bin/change_ip"
 ln -s ../bin/change-ip "$PREFIX/sbin/change-ip"
-ln -s ../bin/change-ip "$PREFIX/sbin/change_ip"
 
 if [ -z "$MAN_FILE" ] && [ -f "$root/man/change_ip.8" ]; then MAN_FILE="$root/man/change_ip.8"; fi
 if [ -n "$MAN_FILE" ] && [ -f "$MAN_FILE" ]; then install -m 0644 "$MAN_FILE" "$PREFIX/share/man/man8/change-ip.8"; fi
 
 "$canonical" --version >/dev/null
-log "Commands: change-ip, change_ip"
+log "Command: change-ip"
 log "Network was not changed. Run: sudo change-ip"

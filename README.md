@@ -53,5 +53,3 @@ Existing IPv4 addresses are preserved. IPv6, firewall, Docker, provider configur
 The commands and flags are shown above. With no arguments, an interactive wizard starts. Persistence is a systemd oneshot invoking the Go binary with strict JSON configuration. Changes are backed up under `/root/change-ip-backup.*`; failures trigger rollback. `status` reports runtime and desired boot state, and `doctor` reports drift, failed/missing units, and unfinished transactions.
 
 The release installer selects amd64 or arm64 and verifies checksums. It never builds on the target host or changes the network.
-
-To upgrade or migrate a pre-3.0 Bash installation, run `curl -fsSL https://raw.githubusercontent.com/ReeA11/change-ip/master/update.sh | sudo sh`. The verified Go binary is installed atomically before legacy commands are removed or replaced with compatibility symlinks.

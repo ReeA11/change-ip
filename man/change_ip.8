@@ -68,11 +68,14 @@ Read strict IP/PREFIX and optional gateway entries.
 Run the checksum-verifying updater from a local checkout with
 .B sudo ./update.sh
 or fetch it from the repository. The new ELF is validated and atomically
-installed before pre-3.0 scripts are removed. Compatibility names
+installed before pre-3.0 scripts and deprecated
 .B change_ip
-and
+commands are removed. The only command name is
+.BR change-ip .
 .B /usr/local/sbin/change-ip
-are symlinks to the canonical /usr/local/bin/change-ip binary.
+is a same-name compatibility symlink to the canonical
+.B /usr/local/bin/change-ip
+binary for existing systemd units.
 .SH SAFETY
 Mutations hold /run/change-ip.lock. SIGINT, SIGTERM, and SIGHUP cause rollback
 when possible. Interactive apply uses systemd-run when available for SSH safety.
