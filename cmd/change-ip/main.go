@@ -129,6 +129,11 @@ func readLine(prompt string) (string, error) {
 }
 func isTerminal() bool { st, e := os.Stdin.Stat(); return e == nil && st.Mode()&os.ModeCharDevice != 0 }
 
+func systemdRunArgs(self string, args []string) []string {
+	cmdArgs := []string{"--quiet", "--wait", "--pty", "--same-dir", "--setenv=CHANGE_IP_SYSTEMD_RUN=1", self}
+	return append(cmdArgs, args...)
+}
+
 func maybeSystemdRun(args []string) error {
 	if os.Getenv("CHANGE_IP_SYSTEMD_RUN") == "1" || os.Getenv("INVOCATION_ID") != "" {
 		return nil
@@ -146,9 +151,7 @@ func maybeSystemdRun(args []string) error {
 	if e != nil {
 		return nil
 	}
-	cmdArgs := []string{"--wait", "--pty", "--same-dir", "--setenv=CHANGE_IP_SYSTEMD_RUN=1", self}
-	cmdArgs = append(cmdArgs, args...)
-	cmd := exec.Command(path, cmdArgs...)
+	cmd := exec.Command(path, systemdRunArgs(self, args)...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
