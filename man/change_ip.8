@@ -20,6 +20,16 @@ link-scope host route and onlink.
 Persistence is a generated systemd oneshot invoking ChangeIP after
 network-online.target. It does not replace cloud-init, Netplan, NetworkManager,
 systemd-networkd, or ifupdown configuration.
+.PP
+With no arguments on a TTY, ChangeIP starts an inline interactive CLI. It uses
+temporary raw input and ANSI updates, without an alternate-screen UI framework.
+Use the arrow keys or j/k to navigate, Enter to select, Escape to go back, and q
+to quit from the main screen. The terminal mode and cursor are restored on exit
+or interruption. English is the default UI language; the Language menu item
+switches between English and Russian and stores the choice in
+.IR /etc/change-ip/language .
+Set NO_COLOR to disable colors. Explicit commands remain plain text and are
+suitable for non-interactive SSH use and pipelines.
 .SH COMMANDS
 .TP
 .B status [INTERFACE]
@@ -63,6 +73,8 @@ Also check the route to 8.8.8.8 and an external IPv4 API. API failure is only a 
 Read strict IP/PREFIX and optional gateway entries.
 .SH FILES
 .I /etc/change-ip-addresses.conf
+.br
+.I /etc/change-ip/language
 .br
 .I /usr/local/lib/change-ip/apply-IFACE.json
 .br
