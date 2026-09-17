@@ -13,7 +13,7 @@ jobs:
       - name: gofmt
         run: test -z "$(find cmd internal integration -name '*.go' -print0 | xargs -0 gofmt -l)"
       - name: Shell syntax
-        run: sh -n install.sh update.sh tests/install_test.sh
+        run: sh -n install.sh install-ru.sh install-en.sh update.sh tests/install_test.sh
       - run: CGO_ENABLED=0 go vet ./...
       - run: CGO_ENABLED=0 go test ./...
       - name: Static cross-builds

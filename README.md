@@ -51,7 +51,8 @@ ChangeIP делает выданный провайдером IPv4 явным so
 ## Установка
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ReeA11/change-ip/master/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/ReeA11/change-ip/master/install-ru.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/ReeA11/change-ip/master/install-en.sh | sudo sh
 ```
 
 ## Обновление
