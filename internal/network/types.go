@@ -29,6 +29,7 @@ type State struct {
 	DefaultRoute     Route      `json:"default_route"`
 	GatewayHostRoute *Route     `json:"gateway_host_route,omitempty"`
 	Routes           []Route    `json:"routes,omitempty"`
+	ManagedRoutes    []Route    `json:"managed_routes,omitempty"`
 }
 
 type RouteResult struct {
@@ -36,6 +37,11 @@ type RouteResult struct {
 	Source    netip.Addr
 	Gateway   netip.Addr
 	Table     int
+}
+
+type RouteChange struct {
+	Before Route `json:"before"`
+	Target Route `json:"target"`
 }
 
 type Backend interface {

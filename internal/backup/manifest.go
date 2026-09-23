@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,18 +21,25 @@ type FileSnapshot struct {
 	Mode    uint32 `json:"mode,omitempty"`
 	Data    string `json:"data_base64,omitempty"`
 }
+type UnitState struct {
+	Path       string `json:"path"`
+	WasEnabled bool   `json:"was_enabled"`
+}
 type Manifest struct {
-	Version            int            `json:"version"`
-	Created            time.Time      `json:"created"`
-	Status             string         `json:"status"`
-	Interface          string         `json:"interface"`
-	Before             network.State  `json:"before"`
-	Target             network.State  `json:"target"`
-	AddressAdded       bool           `json:"address_added"`
-	HostRouteAdded     bool           `json:"host_route_added"`
-	PersistenceChanged bool           `json:"persistence_changed"`
-	UnitWasEnabled     bool           `json:"unit_was_enabled"`
-	Files              []FileSnapshot `json:"files"`
+	Version            int                   `json:"version"`
+	Created            time.Time             `json:"created"`
+	Status             string                `json:"status"`
+	Interface          string                `json:"interface"`
+	Before             network.State         `json:"before"`
+	Target             network.State         `json:"target"`
+	AddressAdded       bool                  `json:"address_added"`
+	AddressesAdded     []netip.Prefix        `json:"addresses_added,omitempty"`
+	HostRouteAdded     bool                  `json:"host_route_added"`
+	RouteChanges       []network.RouteChange `json:"route_changes,omitempty"`
+	PersistenceChanged bool                  `json:"persistence_changed"`
+	UnitWasEnabled     bool                  `json:"unit_was_enabled"`
+	OtherUnits         []UnitState           `json:"other_units,omitempty"`
+	Files              []FileSnapshot        `json:"files"`
 }
 
 func ValidateManagedPath(path string) error {
@@ -91,6 +99,11 @@ func Read(path string) (Manifest, error) {
 	}
 	for _, f := range m.Files {
 		if e := ValidateManagedPath(f.Path); e != nil {
+			return m, e
+		}
+	}
+	for _, unit := range m.OtherUnits {
+		if e := ValidateManagedPath(unit.Path); e != nil {
 			return m, e
 		}
 	}
