@@ -52,6 +52,9 @@ func (u *UI) home() error {
 	for {
 		items := []string{
 			u.t("Change address", "Сменить адрес"),
+			u.t("Add IPv4 addresses", "Добавить IPv4-адреса"),
+			u.t("Change gateway", "Изменить шлюз"),
+			u.t("Change default interface", "Изменить основной интерфейс"),
 			u.t("Status", "Статус"),
 			u.t("Doctor", "Диагностика"),
 			u.t("Rollback", "Откат"),
@@ -80,16 +83,28 @@ func (u *UI) home() error {
 						u.message("ChangeIP", "✕ "+err.Error(), "")
 					}
 				case 1:
-					u.detail(status, false)
+					if err := u.addAddresses(status); err != nil {
+						u.message("ChangeIP", "✕ "+err.Error(), "")
+					}
 				case 2:
-					u.detail(status, true)
+					if err := u.changeGateway(status); err != nil {
+						u.message("ChangeIP", "✕ "+err.Error(), "")
+					}
 				case 3:
-					u.rollback(status)
+					if err := u.changeDefaultInterface(); err != nil {
+						u.message("ChangeIP", "✕ "+err.Error(), "")
+					}
 				case 4:
+					u.detail(status, false)
+				case 5:
+					u.detail(status, true)
+				case 6:
+					u.rollback(status)
+				case 7:
 					if err := u.switchLanguage(); err != nil {
 						u.message("ChangeIP", u.t("Could not save language", "Не удалось сохранить язык")+":\n"+err.Error(), "")
 					}
-				case 5:
+				case 8:
 					return nil
 				}
 				if u.quit {
@@ -102,6 +117,165 @@ func (u *UI) home() error {
 		}
 	refresh:
 	}
+}
+
+type uiOperation func(app.Options, <-chan os.Signal) (string, error)
+
+func (u *UI) runOperation(plan transaction.Plan, o app.Options, operation uiOperation) (string, bool, error) {
+	completed := make(map[string]bool)
+	u.term.draw(u.renderProgress(plan, completed))
+	oldOut, oldErr := u.app.Out, u.app.Err
+	var log strings.Builder
+	u.app.Out, u.app.Err = &log, &log
+	o.Yes = true
+	o.Progress = func(stage string) {
+		completed[stage] = true
+		u.term.draw(u.renderProgress(plan, completed))
+	}
+	applySignals := make(chan os.Signal, 1)
+	applyDone := make(chan struct{})
+	interrupted := make(chan struct{}, 1)
+	go func() {
+		for {
+			select {
+			case k, ok := <-u.term.keys:
+				if !ok || k == keyInterrupt {
+					interrupted <- struct{}{}
+					applySignals <- syscall.SIGINT
+					return
+				}
+			case sig := <-u.signals:
+				interrupted <- struct{}{}
+				applySignals <- sig
+				return
+			case <-applyDone:
+				return
+			}
+		}
+	}()
+	backupDir, err := operation(o, applySignals)
+	close(applyDone)
+	u.app.Out, u.app.Err = oldOut, oldErr
+	select {
+	case <-interrupted:
+		u.quit = true
+		return backupDir, true, err
+	default:
+		return backupDir, false, err
+	}
+}
+
+func (u *UI) addAddresses(s diagnostics.Status) error {
+	var addresses []string
+	for {
+		label := fmt.Sprintf(u.t("Address %d (IP/PREFIX, blank to finish)", "Адрес %d (IP/PREFIX, пусто — завершить)"), len(addresses)+1)
+		address, ok := u.input(u.t("Add IPv4 addresses", "Добавление IPv4-адресов"), label, "")
+		if !ok {
+			return nil
+		}
+		if address == "" {
+			if len(addresses) == 0 {
+				return nil
+			}
+			break
+		}
+		addresses = append(addresses, address)
+	}
+	o := app.Options{Interface: s.State.Interface, Targets: addresses}
+	plan, err := u.app.ResolveAddAddresses(o)
+	if err != nil {
+		return err
+	}
+	var body strings.Builder
+	fmt.Fprintf(&body, "%s\n\n%s\n%s\n\n", u.title(), u.t("Addresses to add", "Добавляемые адреса"), strings.Join(addresses, "\n"))
+	fmt.Fprintf(&body, "%-15s%s\n%-15s%s\n\n", u.t("Interface", "Интерфейс"), plan.Target.Interface, u.t("Outbound", "Исходящий IP"), plan.Before.OutboundSource.String()+u.t(" (unchanged)", " (без изменений)"))
+	choice, ok := u.choose(body.String(), []string{u.t("Apply", "Применить"), u.t("Cancel", "Отмена")}, u.t("↑↓ navigate   enter select   esc cancel", "↑↓ навигация   enter выбрать   esc отмена"))
+	if !ok || choice != 0 {
+		return nil
+	}
+	backupDir, interrupted, err := u.runOperation(plan, o, u.app.AddAddresses)
+	if interrupted {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	message := u.t("✓ IPv4 addresses added\n\nOutbound source was not changed.", "✓ IPv4-адреса добавлены\n\nИсходящий IP не изменён.")
+	if backupDir != "" {
+		message += "\n\n" + u.t("Backup", "Резервная копия") + "\n" + filepath.Base(backupDir)
+	}
+	u.message("ChangeIP", message, "")
+	return nil
+}
+
+func (u *UI) changeGateway(s diagnostics.Status) error {
+	gateway, ok := u.input(u.t("Change gateway", "Изменение шлюза"), u.t("Gateway", "Шлюз"), s.State.DefaultRoute.Gateway.String())
+	if !ok {
+		return nil
+	}
+	o := app.Options{Interface: s.State.Interface, Gateway: gateway}
+	plan, err := u.app.ResolveGateway(o)
+	if err != nil {
+		return err
+	}
+	if !u.review(plan) {
+		return nil
+	}
+	_, interrupted, err := u.runOperation(plan, o, u.app.ChangeGateway)
+	if interrupted || err != nil {
+		return err
+	}
+	u.message("ChangeIP", u.t("✓ Gateway changed\n\nOutbound IP was not changed.", "✓ Шлюз изменён\n\nИсходящий IP не изменён."), "")
+	return nil
+}
+
+func (u *UI) changeDefaultInterface() error {
+	names, err := u.app.Net.Interfaces()
+	if err != nil {
+		return err
+	}
+	var interfaces []string
+	for _, name := range names {
+		if network.InterfaceAllowed(name) {
+			interfaces = append(interfaces, name)
+		}
+	}
+	if len(interfaces) == 0 {
+		return fmt.Errorf("no usable network interfaces")
+	}
+	selected, ok := u.choose(u.t("Change default interface", "Изменение основного интерфейса"), interfaces, u.t("↑↓ navigate   enter select   esc back", "↑↓ навигация   enter выбрать   esc назад"))
+	if !ok {
+		return nil
+	}
+	status, err := u.app.Collect(interfaces[selected])
+	if err != nil {
+		return err
+	}
+	o := app.Options{Interface: interfaces[selected]}
+	if len(status.State.Addresses) > 1 {
+		items := make([]string, 0, len(status.State.Addresses))
+		for _, address := range status.State.Addresses {
+			items = append(items, address.Prefix.String())
+		}
+		address, chosen := u.choose(u.t("Select outbound IPv4", "Выберите исходящий IPv4"), items, u.t("↑↓ navigate   enter select   esc back", "↑↓ навигация   enter выбрать   esc назад"))
+		if !chosen {
+			return nil
+		}
+		o.Target = status.State.Addresses[address].Prefix.Addr().String()
+	}
+	plan, err := u.app.ResolveDefaultInterface(o)
+	if err != nil {
+		return err
+	}
+	if !u.review(plan) {
+		return nil
+	}
+	_, interrupted, err := u.runOperation(plan, o, u.app.ChangeDefaultInterface)
+	if interrupted || err != nil {
+		return err
+	}
+	u.message("ChangeIP", fmt.Sprintf(u.t("✓ Default interface changed to %s", "✓ Основной интерфейс изменён на %s"), plan.Target.Interface), "")
+	return nil
 }
 
 func (u *UI) renderHome(s diagnostics.Status, items []string, selected int) string {
@@ -288,15 +462,20 @@ func (u *UI) renderProgress(p transaction.Plan, complete map[string]bool) string
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n\n%s\n\n", u.title(), u.t("Applying configuration", "Применение конфигурации"))
-	if p.AddressToAdd != nil {
-		fmt.Fprintf(&b, "%s %s %s\n", mark(app.ProgressAddress), u.t("Address", "Адрес"), p.AddressToAdd)
+	if len(p.AddedAddresses()) > 0 {
+		for _, prefix := range p.AddedAddresses() {
+			fmt.Fprintf(&b, "%s %s %s\n", mark(app.ProgressAddress), u.t("Address", "Адрес"), prefix)
+		}
 	} else {
 		fmt.Fprintln(&b, u.t("– Address already exists", "– Адрес уже существует"))
 	}
 	if p.HostRouteToAdd != nil {
 		fmt.Fprintf(&b, "%s %s\n", mark(app.ProgressGateway), u.t("Gateway route", "Маршрут до шлюза"))
 	}
-	fmt.Fprintf(&b, "%s %s\n%s %s\n%s %s\n", mark(app.ProgressDefault), u.t("Default route", "Маршрут по умолчанию"), mark(app.ProgressPersistence), u.t("Persistence", "Автозагрузка"), mark(app.ProgressVerify), u.t("Source verification", "Проверка source-адреса"))
+	if p.ReplaceDefault {
+		fmt.Fprintf(&b, "%s %s\n", mark(app.ProgressDefault), u.t("Default route", "Маршрут по умолчанию"))
+	}
+	fmt.Fprintf(&b, "%s %s\n%s %s\n", mark(app.ProgressPersistence), u.t("Persistence", "Автозагрузка"), mark(app.ProgressVerify), u.t("Verification", "Проверка"))
 	return b.String()
 }
 

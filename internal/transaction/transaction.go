@@ -9,19 +9,36 @@ import (
 )
 
 type Plan struct {
-	Before         network.State  `json:"before"`
-	Target         network.State  `json:"target"`
-	AddressToAdd   *netip.Prefix  `json:"address_to_add,omitempty"`
-	HostRouteToAdd *network.Route `json:"host_route_to_add,omitempty"`
+	Before            network.State         `json:"before"`
+	Target            network.State         `json:"target"`
+	AddressToAdd      *netip.Prefix         `json:"address_to_add,omitempty"`
+	AddressesToAdd    []netip.Prefix        `json:"addresses_to_add,omitempty"`
+	HostRouteToAdd    *network.Route        `json:"host_route_to_add,omitempty"`
+	ReplaceDefault    bool                  `json:"replace_default"`
+	RouteChanges      []network.RouteChange `json:"route_changes,omitempty"`
+	VerifyGlobal      bool                  `json:"verify_global,omitempty"`
+	DisableInterfaces []string              `json:"disable_interfaces,omitempty"`
 }
 
 type Transaction struct {
 	Backend        network.Backend
 	Plan           Plan
 	AddressAdded   bool
+	AddressesAdded []netip.Prefix
 	HostRouteAdded bool
 	DefaultChanged bool
+	RoutesChanged  int
 	Committed      bool
+}
+
+func (p Plan) AddedAddresses() []netip.Prefix {
+	if len(p.AddressesToAdd) > 0 {
+		return p.AddressesToAdd
+	}
+	if p.AddressToAdd != nil {
+		return []netip.Prefix{*p.AddressToAdd}
+	}
+	return nil
 }
 
 func BuildPlan(before network.State, targetPrefix netip.Prefix, gateway netip.Addr) (Plan, error) {
@@ -37,6 +54,8 @@ func BuildPlan(before network.State, targetPrefix netip.Prefix, gateway netip.Ad
 		}
 	}
 	target := before
+	target.Addresses = append([]network.Address(nil), before.Addresses...)
+	target.Routes = append([]network.Route(nil), before.Routes...)
 	target.OutboundSource = targetPrefix.Addr()
 	target.DefaultRoute.Gateway = gateway
 	target.DefaultRoute.Source = targetPrefix.Addr()
@@ -44,10 +63,11 @@ func BuildPlan(before network.State, targetPrefix netip.Prefix, gateway netip.Ad
 	if before.GatewayHostRoute == nil || before.GatewayHostRoute.Destination.Addr() != gateway {
 		target.GatewayHostRoute = nil
 	}
-	plan := Plan{Before: before, Target: target}
+	plan := Plan{Before: before, Target: target, ReplaceDefault: true}
 	if _, ok := network.HasAddress(before, targetPrefix.Addr()); !ok {
 		p := targetPrefix
 		plan.AddressToAdd = &p
+		plan.AddressesToAdd = []netip.Prefix{p}
 		target.Addresses = append(target.Addresses, network.Address{Prefix: p})
 		plan.Target = target
 	}
@@ -71,12 +91,44 @@ func BuildPlan(before network.State, targetPrefix netip.Prefix, gateway netip.Ad
 	return plan, nil
 }
 
+// BuildAddressPlan creates an add-only transaction. It deliberately leaves the
+// default route and its preferred source untouched.
+func BuildAddressPlan(before network.State, prefixes []netip.Prefix) (Plan, error) {
+	if len(prefixes) == 0 {
+		return Plan{}, fmt.Errorf("at least one IPv4 prefix is required")
+	}
+	target := before
+	target.Addresses = append([]network.Address(nil), before.Addresses...)
+	target.Routes = append([]network.Route(nil), before.Routes...)
+	seen := make(map[netip.Addr]bool, len(prefixes))
+	plan := Plan{Before: before, Target: target}
+	for _, prefix := range prefixes {
+		if !prefix.IsValid() || !prefix.Addr().Is4() || prefix.Bits() < 1 {
+			return Plan{}, fmt.Errorf("invalid IPv4 prefix %q", prefix)
+		}
+		if seen[prefix.Addr()] {
+			return Plan{}, fmt.Errorf("duplicate IPv4 address %s", prefix.Addr())
+		}
+		seen[prefix.Addr()] = true
+		if existing, ok := network.HasAddress(before, prefix.Addr()); ok {
+			if existing.Prefix.Bits() != prefix.Bits() {
+				return Plan{}, fmt.Errorf("%s exists as /%d, not /%d", prefix.Addr(), existing.Prefix.Bits(), prefix.Bits())
+			}
+			continue
+		}
+		plan.AddressesToAdd = append(plan.AddressesToAdd, prefix)
+		plan.Target.Addresses = append(plan.Target.Addresses, network.Address{Prefix: prefix})
+	}
+	return plan, nil
+}
+
 func (t *Transaction) Apply() error {
-	if t.Plan.AddressToAdd != nil {
-		if e := t.Backend.AddAddress(t.Plan.Before.Interface, *t.Plan.AddressToAdd); e != nil {
-			return fmt.Errorf("add address: %w", e)
+	for _, prefix := range t.Plan.AddedAddresses() {
+		if e := t.Backend.AddAddress(t.Plan.Before.Interface, prefix); e != nil {
+			return t.fail(fmt.Sprintf("add address %s", prefix), e)
 		}
 		t.AddressAdded = true
+		t.AddressesAdded = append(t.AddressesAdded, prefix)
 	}
 	if t.Plan.HostRouteToAdd != nil {
 		if e := t.Backend.ReplaceRoute(*t.Plan.HostRouteToAdd); e != nil {
@@ -84,16 +136,35 @@ func (t *Transaction) Apply() error {
 		}
 		t.HostRouteAdded = true
 	}
-	if e := t.Backend.ReplaceRoute(t.Plan.Target.DefaultRoute); e != nil {
-		return t.fail("replace default route", e)
+	if t.Plan.ReplaceDefault {
+		if e := t.Backend.ReplaceRoute(t.Plan.Target.DefaultRoute); e != nil {
+			return t.fail("replace default route", e)
+		}
+		t.DefaultChanged = true
 	}
-	t.DefaultChanged = true
+	for _, change := range t.Plan.RouteChanges {
+		if e := t.Backend.ReplaceRoute(change.Target); e != nil {
+			return t.fail("replace competing default route", e)
+		}
+		t.RoutesChanged++
+	}
 	return nil
 }
 func (t *Transaction) Verify() error {
 	s, e := t.Backend.Snapshot(t.Plan.Target.Interface)
 	if e != nil {
 		return e
+	}
+	for _, prefix := range t.Plan.AddedAddresses() {
+		if _, ok := network.HasAddress(s, prefix.Addr()); !ok {
+			return fmt.Errorf("target address %s missing", prefix.Addr())
+		}
+	}
+	if !t.Plan.ReplaceDefault {
+		if s.OutboundSource != t.Plan.Before.OutboundSource || s.DefaultRoute != t.Plan.Before.DefaultRoute {
+			return fmt.Errorf("default route changed during address-only operation")
+		}
+		return nil
 	}
 	src := t.Plan.Target.OutboundSource
 	if _, ok := network.HasAddress(s, src); !ok {
@@ -115,10 +186,26 @@ func (t *Transaction) Verify() error {
 	if s.DefaultRoute.Gateway != t.Plan.Target.DefaultRoute.Gateway || s.DefaultRoute.Source != src || s.DefaultRoute.Table != t.Plan.Target.DefaultRoute.Table || s.DefaultRoute.Metric != t.Plan.Target.DefaultRoute.Metric {
 		return fmt.Errorf("default route differs from target")
 	}
+	if t.Plan.VerifyGlobal {
+		r, err := t.Backend.RouteTo(netip.MustParseAddr("1.1.1.1"), "")
+		if err != nil {
+			return err
+		}
+		if r.Interface != t.Plan.Target.Interface || r.Source != src {
+			return fmt.Errorf("global default uses %s src %s, expected %s src %s", r.Interface, r.Source, t.Plan.Target.Interface, src)
+		}
+	}
 	return nil
 }
 func (t *Transaction) Rollback() error {
 	var errs []error
+	for i := t.RoutesChanged - 1; i >= 0; i-- {
+		if e := t.Backend.ReplaceRoute(t.Plan.RouteChanges[i].Before); e != nil {
+			errs = append(errs, fmt.Errorf("restore competing default route: %w", e))
+		} else {
+			t.RoutesChanged--
+		}
+	}
 	if t.DefaultChanged {
 		if e := t.Backend.ReplaceRoute(t.Plan.Before.DefaultRoute); e != nil {
 			errs = append(errs, fmt.Errorf("restore default route: %w", e))
@@ -133,12 +220,18 @@ func (t *Transaction) Rollback() error {
 			t.HostRouteAdded = false
 		}
 	}
-	if t.AddressAdded && t.Plan.AddressToAdd != nil {
-		if e := t.Backend.DeleteAddress(t.Plan.Before.Interface, *t.Plan.AddressToAdd); e != nil {
-			errs = append(errs, fmt.Errorf("delete added address: %w", e))
-		} else {
-			t.AddressAdded = false
+	added := t.AddressesAdded
+	if len(added) == 0 && t.AddressAdded {
+		added = t.Plan.AddedAddresses()
+	}
+	for i := len(added) - 1; i >= 0; i-- {
+		if e := t.Backend.DeleteAddress(t.Plan.Before.Interface, added[i]); e != nil {
+			errs = append(errs, fmt.Errorf("delete added address %s: %w", added[i], e))
 		}
+	}
+	if len(errs) == 0 {
+		t.AddressAdded = false
+		t.AddressesAdded = nil
 	}
 	return errors.Join(errs...)
 }

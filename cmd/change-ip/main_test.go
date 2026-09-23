@@ -29,11 +29,25 @@ func TestParseApplySubcommandArguments(t *testing.T) {
 }
 
 func TestSystemdRunIsQuiet(t *testing.T) {
+	t.Setenv("SUDO_USER", "alice")
 	got := systemdRunArgs("/usr/local/bin/change-ip", []string{"192.0.2.20/24", "--yes"})
 	if !slices.Contains(got, "--quiet") || !slices.Contains(got, "--wait") || !slices.Contains(got, "--pty") {
 		t.Fatalf("systemd-run arguments = %v", got)
 	}
 	if got[len(got)-2] != "192.0.2.20/24" || got[len(got)-1] != "--yes" {
 		t.Fatalf("ChangeIP arguments were not preserved: %v", got)
+	}
+	if !slices.Contains(got, "--setenv=SUDO_USER=alice") {
+		t.Fatalf("invoking user was not preserved: %v", got)
+	}
+}
+
+func TestParseManagementOperation(t *testing.T) {
+	o, positional, err := parseOperation([]string{"--dry-run", "--interface", "eth1", "192.0.2.20/24", "192.0.2.21/24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.DryRun || o.Interface != "eth1" || !slices.Equal(positional, []string{"192.0.2.20/24", "192.0.2.21/24"}) {
+		t.Fatalf("options=%+v positional=%v", o, positional)
 	}
 }

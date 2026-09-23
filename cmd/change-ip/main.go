@@ -28,6 +28,9 @@ func usage() {
 Usage:
   change-ip                         interactive wizard
   change-ip NEW_IP[/PREFIX] [IFACE]
+  change-ip add-address IP/PREFIX [IP/PREFIX ...]
+  change-ip set-gateway GATEWAY
+  change-ip set-interface IFACE [--source IP]
   change-ip status [IFACE]
   change-ip doctor [IFACE]
   change-ip rollback [BACKUP_DIR]
@@ -45,6 +48,74 @@ Options:
   --verbose              verbose diagnostics
   --version              print version
 `, version)
+}
+
+func parseOperation(args []string) (app.Options, []string, error) {
+	o := app.Options{}
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--dry-run":
+			o.DryRun = true
+		case "--runtime-only":
+			o.RuntimeOnly = true
+		case "--yes", "-y":
+			o.Yes = true
+		case "--check-egress":
+			o.CheckEgress = true
+		case "--verbose":
+			o.Verbose = true
+		case "--interface", "-i":
+			v, err := value(args, &i, args[i])
+			if err != nil {
+				return o, nil, err
+			}
+			o.Interface = v
+		case "--gateway", "-g":
+			v, err := value(args, &i, args[i])
+			if err != nil {
+				return o, nil, err
+			}
+			o.Gateway = v
+		case "--source":
+			v, err := value(args, &i, args[i])
+			if err != nil {
+				return o, nil, err
+			}
+			o.Target = v
+		case "--prefix", "-p":
+			v, err := value(args, &i, args[i])
+			if err != nil {
+				return o, nil, err
+			}
+			o.Prefix = strings.TrimPrefix(v, "/")
+		case "--":
+			positional = append(positional, args[i+1:]...)
+			i = len(args)
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return o, nil, fmt.Errorf("unknown option %s", args[i])
+			}
+			positional = append(positional, args[i])
+		}
+	}
+	return o, positional, nil
+}
+
+type plannedOperation func(app.Options, <-chan os.Signal) (string, error)
+
+func executeOperation(args []string, o app.Options, signals <-chan os.Signal, operation plannedOperation) error {
+	if !o.DryRun {
+		if err := maybeSystemdRun(args); err != nil {
+			return err
+		}
+		return withLock(func() error {
+			_, err := operation(o, signals)
+			return err
+		})
+	}
+	_, err := operation(o, nil)
+	return err
 }
 
 func value(args []string, i *int, name string) (string, error) {
@@ -131,6 +202,9 @@ func isTerminal() bool { st, e := os.Stdin.Stat(); return e == nil && st.Mode()&
 
 func systemdRunArgs(self string, args []string) []string {
 	cmdArgs := []string{"--quiet", "--wait", "--pty", "--same-dir", "--setenv=CHANGE_IP_SYSTEMD_RUN=1", self}
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		cmdArgs = append(cmdArgs[:len(cmdArgs)-1], "--setenv=SUDO_USER="+sudoUser, self)
+	}
 	return append(cmdArgs, args...)
 }
 
@@ -277,6 +351,42 @@ func main() {
 			break
 		}
 		runErr = withLock(func() error { return a.ApplyProfile(filepath.Clean(path)) })
+	case "add-address":
+		o, addresses, parseErr := parseOperation(args[1:])
+		if parseErr != nil {
+			runErr = parseErr
+			break
+		}
+		if len(addresses) == 0 {
+			runErr = fmt.Errorf("add-address requires at least one IP/PREFIX")
+			break
+		}
+		o.Targets = addresses
+		runErr = executeOperation(args, o, sig, a.AddAddresses)
+	case "set-gateway":
+		o, values, parseErr := parseOperation(args[1:])
+		if parseErr != nil {
+			runErr = parseErr
+			break
+		}
+		if len(values) != 1 || o.Gateway != "" {
+			runErr = fmt.Errorf("set-gateway requires exactly one GATEWAY argument")
+			break
+		}
+		o.Gateway = values[0]
+		runErr = executeOperation(args, o, sig, a.ChangeGateway)
+	case "set-interface":
+		o, values, parseErr := parseOperation(args[1:])
+		if parseErr != nil {
+			runErr = parseErr
+			break
+		}
+		if len(values) != 1 || o.Interface != "" {
+			runErr = fmt.Errorf("set-interface requires exactly one IFACE argument")
+			break
+		}
+		o.Interface = values[0]
+		runErr = executeOperation(args, o, sig, a.ChangeDefaultInterface)
 	case "wizard", "--tui":
 		if !ui.CanRun(os.Stdin, os.Stdout) {
 			runErr = fmt.Errorf("interactive mode requires TTY stdin and stdout")
