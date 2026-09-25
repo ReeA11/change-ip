@@ -30,6 +30,7 @@ type State struct {
 	GatewayHostRoute *Route     `json:"gateway_host_route,omitempty"`
 	Routes           []Route    `json:"routes,omitempty"`
 	ManagedRoutes    []Route    `json:"managed_routes,omitempty"`
+	ManagedRules     []Rule     `json:"managed_rules,omitempty"`
 }
 
 type RouteResult struct {
@@ -44,6 +45,14 @@ type RouteChange struct {
 	Target Route `json:"target"`
 }
 
+// Rule sends traffic from a local address through the routing table that
+// belongs to the interface carrying that address.
+type Rule struct {
+	Source   netip.Prefix `json:"source"`
+	Table    int          `json:"table"`
+	Priority int          `json:"priority"`
+}
+
 type Backend interface {
 	Interfaces() ([]string, error)
 	DefaultRoutes() ([]Route, error)
@@ -53,4 +62,7 @@ type Backend interface {
 	DeleteAddress(interfaceName string, prefix netip.Prefix) error
 	ReplaceRoute(route Route) error
 	DeleteRoute(route Route) error
+	Rules() ([]Rule, error)
+	AddRule(rule Rule) error
+	DeleteRule(rule Rule) error
 }

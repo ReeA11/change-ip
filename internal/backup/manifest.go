@@ -36,6 +36,8 @@ type Manifest struct {
 	AddressesAdded     []netip.Prefix        `json:"addresses_added,omitempty"`
 	HostRouteAdded     bool                  `json:"host_route_added"`
 	RouteChanges       []network.RouteChange `json:"route_changes,omitempty"`
+	RoutesAdded        []network.Route       `json:"routes_added,omitempty"`
+	RulesAdded         []network.Rule        `json:"rules_added,omitempty"`
 	PersistenceChanged bool                  `json:"persistence_changed"`
 	UnitWasEnabled     bool                  `json:"unit_was_enabled"`
 	OtherUnits         []UnitState           `json:"other_units,omitempty"`

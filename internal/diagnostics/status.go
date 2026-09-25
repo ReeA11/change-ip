@@ -2,9 +2,11 @@ package diagnostics
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/ReeA11/change-ip/internal/network"
@@ -17,6 +19,8 @@ type Status struct {
 	UnitPath, ConfigPath, UnitEnabled, UnitActive string
 	GatewayReachable                              bool
 	PersistenceManagers                           []string
+	AddressConflicts                              []string
+	Rules                                         []network.Rule
 }
 
 func systemctl(args ...string) string {
@@ -37,6 +41,31 @@ func Collect(b network.Backend, iface, binary string) (Status, error) {
 		return Status{}, e
 	}
 	out := Status{State: s, ConfigPath: cfg, UnitPath: unit}
+	if rules, rulesErr := b.Rules(); rulesErr == nil {
+		out.Rules = rules
+	}
+	owners := make(map[netip.Addr][]string)
+	if names, listErr := b.Interfaces(); listErr == nil {
+		for _, name := range names {
+			if !network.InterfaceAllowed(name) {
+				continue
+			}
+			state, snapshotErr := b.Snapshot(name)
+			if snapshotErr != nil {
+				continue
+			}
+			for _, address := range state.Addresses {
+				owners[address.Prefix.Addr()] = append(owners[address.Prefix.Addr()], name)
+			}
+		}
+	}
+	for ip, interfaces := range owners {
+		if len(interfaces) > 1 {
+			sort.Strings(interfaces)
+			out.AddressConflicts = append(out.AddressConflicts, fmt.Sprintf("IP %s is configured on multiple interfaces: %s", ip, strings.Join(interfaces, ", ")))
+		}
+	}
+	sort.Strings(out.AddressConflicts)
 	if s.DefaultRoute.Gateway.IsValid() {
 		_, routeErr := b.RouteTo(s.DefaultRoute.Gateway, iface)
 		out.GatewayReachable = routeErr == nil
@@ -76,6 +105,18 @@ func Problems(s Status) []string {
 		if s.State.DefaultRoute.Table != d.DefaultRoute.Table || s.State.DefaultRoute.Metric != d.DefaultRoute.Metric {
 			p = append(p, "default route table/metric differs from desired state")
 		}
+		for _, wanted := range d.ManagedRules {
+			found := false
+			for _, rule := range s.Rules {
+				if rule == wanted {
+					found = true
+					break
+				}
+			}
+			if !found {
+				p = append(p, fmt.Sprintf("return path for IP %s is missing", wanted.Source.Addr()))
+			}
+		}
 	}
 	if s.UnitEnabled == "missing" {
 		p = append(p, "persistence unit is missing")
@@ -85,11 +126,12 @@ func Problems(s Status) []string {
 	if s.UnitActive == "failed" {
 		p = append(p, "persistence unit failed")
 	}
-	if !s.GatewayReachable {
+	if s.State.DefaultRoute.Gateway.IsValid() && !s.GatewayReachable {
 		p = append(p, "gateway route is missing or uses another interface")
 	}
 	if len(s.PersistenceManagers) > 1 {
 		p = append(p, fmt.Sprintf("potential persistence conflict: active managers: %s", strings.Join(s.PersistenceManagers, ", ")))
 	}
+	p = append(p, s.AddressConflicts...)
 	return p
 }

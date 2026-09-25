@@ -77,6 +77,9 @@ func (a *Application) interfaceFor(explicit string) (string, error) {
 		if e := persist.ValidateInterface(explicit); e != nil {
 			return "", e
 		}
+		// An explicitly selected provider interface may not have a default
+		// route yet. Selecting it is precisely what will create that route.
+		return explicit, nil
 	} else if routed, e := a.Net.RouteTo(netip.MustParseAddr("1.1.1.1"), ""); e == nil && network.InterfaceAllowed(routed.Interface) {
 		return routed.Interface, nil
 	}
@@ -149,22 +152,60 @@ func (a *Application) Resolve(o Options) (transaction.Plan, error) {
 		} else if old, ok := network.HasAddress(before, target.Addr()); ok {
 			target = old.Prefix
 			prefixKnown = true
+		} else if other, owner, ok, ownerErr := a.addressOwner(target.Addr(), iface); ownerErr != nil {
+			return transaction.Plan{}, ownerErr
+		} else if ok {
+			return transaction.Plan{}, fmt.Errorf("IP %s is already configured on %s; choose that connection instead of adding it to %s", other.Prefix.Addr(), owner, iface)
 		}
 		if !prefixKnown {
 			return transaction.Plan{}, fmt.Errorf("prefix required for new IP %s; it is never guessed", target.Addr())
 		}
 	}
 	gw := before.DefaultRoute.Gateway
+	active, defaultRoutes, e := a.activeDefaultRoute()
+	if e != nil {
+		return transaction.Plan{}, e
+	}
 	if o.Gateway != "" {
 		gw, e = netip.ParseAddr(o.Gateway)
 		if e != nil || !config.UsableIPv4(gw) {
 			return transaction.Plan{}, fmt.Errorf("invalid gateway %q", o.Gateway)
 		}
+	} else if !gw.IsValid() {
+		if target.Bits() < 32 && target.Contains(active.Gateway) {
+			gw = active.Gateway
+		} else {
+			for _, address := range before.Addresses {
+				if address.Prefix.Bits() < 32 && address.Prefix.Contains(active.Gateway) {
+					gw = active.Gateway
+					break
+				}
+			}
+		}
 	}
 	if !gw.IsValid() {
-		return transaction.Plan{}, fmt.Errorf("no IPv4 gateway on %s", iface)
+		return transaction.Plan{}, fmt.Errorf("no gateway is configured for %s; provide the gateway shown by your provider", iface)
 	}
-	return transaction.BuildPlan(before, target, gw)
+	planningBefore := before
+	if planningBefore.DefaultRoute.Interface == "" || planningBefore.DefaultRoute.Table != active.Table {
+		planningBefore.DefaultRoute = network.Route{}
+		planningBefore.GatewayHostRoute = nil
+	}
+	plan, err := transaction.BuildPlan(planningBefore, target, gw)
+	if err != nil {
+		return transaction.Plan{}, err
+	}
+	if active.Interface != iface || planningBefore.DefaultRoute.Interface == "" {
+		prepareDefaultSwitch(&plan, active, defaultRoutes)
+	}
+	fallbackGateway := gw
+	if active.Gateway.IsValid() {
+		fallbackGateway = active.Gateway
+	}
+	if err = a.attachSourcePolicies(&plan, fallbackGateway); err != nil {
+		return transaction.Plan{}, err
+	}
+	return plan, nil
 }
 
 func (a *Application) ResolveAddAddresses(o Options) (transaction.Plan, error) {
@@ -195,7 +236,14 @@ func (a *Application) ResolveAddAddresses(o Options) (transaction.Plan, error) {
 		}
 		prefixes = append(prefixes, prefix)
 	}
-	return transaction.BuildAddressPlan(before, prefixes)
+	plan, err := transaction.BuildAddressPlan(before, prefixes)
+	if err != nil {
+		return transaction.Plan{}, err
+	}
+	if err = a.validateAddressOwnership(plan.Target); err != nil {
+		return transaction.Plan{}, err
+	}
+	return plan, nil
 }
 
 func (a *Application) ResolveGateway(o Options) (transaction.Plan, error) {
@@ -218,7 +266,14 @@ func (a *Application) ResolveGateway(o Options) (transaction.Plan, error) {
 	if !ok {
 		return transaction.Plan{}, fmt.Errorf("outbound source %s is not configured on %s", before.OutboundSource, iface)
 	}
-	return transaction.BuildPlan(before, address.Prefix, gateway)
+	plan, err := transaction.BuildPlan(before, address.Prefix, gateway)
+	if err != nil {
+		return transaction.Plan{}, err
+	}
+	if err = a.attachSourcePolicies(&plan, gateway); err != nil {
+		return transaction.Plan{}, err
+	}
+	return plan, nil
 }
 
 func preferredInterfaceAddress(state network.State, explicit string) (netip.Prefix, error) {
@@ -268,85 +323,61 @@ func (a *Application) ResolveDefaultInterface(o Options) (transaction.Plan, erro
 	if err != nil {
 		return transaction.Plan{}, err
 	}
+	active, routes, err := a.activeDefaultRoute()
+	if err != nil {
+		return transaction.Plan{}, err
+	}
 	gateway := before.DefaultRoute.Gateway
 	if o.Gateway != "" {
 		gateway, err = netip.ParseAddr(strings.TrimSpace(o.Gateway))
 		if err != nil || !config.UsableIPv4(gateway) {
 			return transaction.Plan{}, fmt.Errorf("invalid gateway %q", o.Gateway)
 		}
+	} else if !gateway.IsValid() && active.Gateway.IsValid() {
+		for _, address := range before.Addresses {
+			if address.Prefix.Bits() < 32 && address.Prefix.Contains(active.Gateway) {
+				gateway = active.Gateway
+				break
+			}
+		}
 	}
 	if !gateway.IsValid() {
-		return transaction.Plan{}, fmt.Errorf("no IPv4 gateway on %s", iface)
+		return transaction.Plan{}, fmt.Errorf("no gateway is configured for %s; enter the gateway shown by your provider", iface)
 	}
-	plan, err := transaction.BuildPlan(before, prefix, gateway)
+	planningBefore := before
+	if planningBefore.DefaultRoute.Interface == "" || planningBefore.DefaultRoute.Table != active.Table {
+		planningBefore.DefaultRoute = network.Route{}
+		planningBefore.GatewayHostRoute = nil
+	}
+	plan, err := transaction.BuildPlan(planningBefore, prefix, gateway)
 	if err != nil {
 		return transaction.Plan{}, err
 	}
-	routes, err := a.Net.DefaultRoutes()
-	if err != nil {
+	prepareDefaultSwitch(&plan, active, routes)
+	fallbackGateway := active.Gateway
+	if !fallbackGateway.IsValid() {
+		fallbackGateway = gateway
+	}
+	if err = a.attachSourcePolicies(&plan, fallbackGateway); err != nil {
 		return transaction.Plan{}, err
 	}
-	var active network.Route
-	routed, routeErr := a.Net.RouteTo(netip.MustParseAddr("1.1.1.1"), "")
-	if routeErr == nil {
-		for _, route := range routes {
-			if !route.IsDefault() || route.Interface != routed.Interface {
-				continue
-			}
-			if routed.Table != 0 && route.Table != routed.Table {
-				continue
-			}
-			if routed.Gateway.IsValid() && route.Gateway != routed.Gateway {
-				continue
-			}
-			active = route
-			break
-		}
-	}
-	if active.Interface == "" {
-		active, err = network.SelectDefault(routes, "")
-		if err != nil {
-			return transaction.Plan{}, err
-		}
-	}
-	if active.Interface != iface {
-		if active.Metric > 0 {
-			plan.Target.DefaultRoute.Metric = active.Metric - 1
-		} else {
-			plan.Target.DefaultRoute.Metric = 0
-			for _, route := range routes {
-				if route.Interface == iface || route.Table != active.Table || route.Metric != 0 {
-					continue
-				}
-				demoted := route
-				demoted.Metric = 1
-				plan.RouteChanges = append(plan.RouteChanges, network.RouteChange{Before: route, Target: demoted})
-				plan.Target.ManagedRoutes = append(plan.Target.ManagedRoutes, demoted)
-			}
-		}
-	}
-	seenInterfaces := make(map[string]bool)
-	for _, route := range routes {
-		if route.Interface == iface || !route.IsDefault() || !network.InterfaceAllowed(route.Interface) || seenInterfaces[route.Interface] {
-			continue
-		}
-		seenInterfaces[route.Interface] = true
-		plan.DisableInterfaces = append(plan.DisableInterfaces, route.Interface)
-	}
-	plan.VerifyGlobal = true
 	return plan, nil
 }
 func printPlan(out io.Writer, p transaction.Plan, runtimeOnly bool) {
 	if !p.ReplaceDefault {
-		fmt.Fprintf(out, "\nChangeIP add-address plan\n  Interface : %s\n  Outbound  : %s (unchanged)\n  Add IPs   :", p.Before.Interface, p.Before.OutboundSource)
+		fmt.Fprintf(out, "\nChangeIP plan\n  Connection : %s\n  Outbound IP: %s (unchanged)\n  Add IPs    :", p.Before.Interface, p.Before.OutboundSource)
 		for _, prefix := range p.AddedAddresses() {
 			fmt.Fprintf(out, " %s", prefix)
 		}
 		fmt.Fprintf(out, "\n  Persist   : %t\n\n", !runtimeOnly)
 		return
 	}
-	fmt.Fprintf(out, "\nChangeIP plan\n  Interface : %s\n  Old source: %s\n  New IP    : %s\n  Gateway   : %s\n  Metric    : %d\n  Table     : %d\n  On-link   : %t\n  Add IP    : %t\n  Persist   : %t\n\n", p.Before.Interface, p.Before.OutboundSource, p.Target.OutboundSource, p.Target.DefaultRoute.Gateway, p.Target.DefaultRoute.Metric, p.Target.DefaultRoute.Table, p.Target.DefaultRoute.OnLink, p.AddressToAdd != nil, !runtimeOnly)
-	if p.Before.DefaultRoute.Gateway != p.Target.DefaultRoute.Gateway {
+	previous := p.Before.OutboundSource.String()
+	if !p.Before.OutboundSource.IsValid() {
+		previous = "current connection"
+	}
+	fmt.Fprintf(out, "\nChangeIP plan\n  Connection : %s\n  Current IP : %s\n  New IP     : %s\n  Gateway    : %s\n  Add IP     : %t\n  Keep IPs reachable: %t\n  Save after reboot : %t\n\n", p.Target.Interface, previous, p.Target.OutboundSource, p.Target.DefaultRoute.Gateway, p.AddressToAdd != nil, len(p.Target.ManagedRules) > 0, !runtimeOnly)
+	if p.Before.DefaultRoute.Interface != "" && p.Before.DefaultRoute.Gateway != p.Target.DefaultRoute.Gateway {
 		fmt.Fprintln(out, "[WARNING] Gateway changes; a wrong provider gateway can disconnect the server.")
 	}
 }
@@ -500,7 +531,7 @@ func (a *Application) applyPlan(o Options, p transaction.Plan, signals <-chan os
 			return "", fmt.Errorf("create backup: %w", e)
 		}
 		manifestPath = filepath.Join(backupDir, "manifest.json")
-		manifest = backup.Manifest{Created: time.Now().UTC(), Status: "pending", Interface: p.Before.Interface, Before: p.Before, Target: p.Target, AddressAdded: len(p.AddedAddresses()) > 0, AddressesAdded: p.AddedAddresses(), HostRouteAdded: p.HostRouteToAdd != nil, RouteChanges: append([]network.RouteChange(nil), p.RouteChanges...), PersistenceChanged: true, UnitWasEnabled: unitEnabled(unit), OtherUnits: otherUnits, Files: []backup.FileSnapshot{f1, f2}}
+		manifest = backup.Manifest{Created: time.Now().UTC(), Status: "pending", Interface: p.Before.Interface, Before: p.Before, Target: p.Target, AddressAdded: len(p.AddedAddresses()) > 0, AddressesAdded: p.AddedAddresses(), HostRouteAdded: p.HostRouteToAdd != nil, RouteChanges: append([]network.RouteChange(nil), p.RouteChanges...), RoutesAdded: append([]network.Route(nil), p.RoutesToAdd...), RulesAdded: append([]network.Rule(nil), p.RulesToAdd...), PersistenceChanged: true, UnitWasEnabled: unitEnabled(unit), OtherUnits: otherUnits, Files: []backup.FileSnapshot{f1, f2}}
 		if e = backup.Write(manifestPath, manifest); e != nil {
 			return "", e
 		}
@@ -541,6 +572,8 @@ func (a *Application) applyPlan(o Options, p transaction.Plan, signals <-chan os
 	manifest.AddressAdded = tx.AddressAdded
 	manifest.AddressesAdded = append([]netip.Prefix(nil), tx.AddressesAdded...)
 	manifest.HostRouteAdded = tx.HostRouteAdded
+	manifest.RoutesAdded = append([]network.Route(nil), p.RoutesToAdd[:tx.RoutesAdded]...)
+	manifest.RulesAdded = append([]network.Rule(nil), p.RulesToAdd[:tx.RulesAdded]...)
 	if !o.RuntimeOnly {
 		_, unit, e := ps.Write(p.Target)
 		if e != nil {
@@ -708,7 +741,7 @@ func (a *Application) Rollback(dir string) error {
 	if e != nil {
 		return e
 	}
-	p := transaction.Plan{Before: m.Before, Target: m.Target, ReplaceDefault: m.Before.DefaultRoute != m.Target.DefaultRoute, RouteChanges: append([]network.RouteChange(nil), m.RouteChanges...)}
+	p := transaction.Plan{Before: m.Before, Target: m.Target, ReplaceDefault: m.Before.DefaultRoute != m.Target.DefaultRoute, RouteChanges: append([]network.RouteChange(nil), m.RouteChanges...), RoutesToAdd: append([]network.Route(nil), m.RoutesAdded...), RulesToAdd: append([]network.Rule(nil), m.RulesAdded...)}
 	if len(m.AddressesAdded) > 0 {
 		p.AddressesToAdd = append([]netip.Prefix(nil), m.AddressesAdded...)
 	} else if m.AddressAdded {
@@ -723,7 +756,7 @@ func (a *Application) Rollback(dir string) error {
 	if m.HostRouteAdded && m.Target.GatewayHostRoute != nil {
 		p.HostRouteToAdd = m.Target.GatewayHostRoute
 	}
-	tx := transaction.Transaction{Backend: a.Net, Plan: p, AddressAdded: m.AddressAdded, AddressesAdded: append([]netip.Prefix(nil), m.AddressesAdded...), HostRouteAdded: m.HostRouteAdded, DefaultChanged: p.ReplaceDefault, RoutesChanged: len(m.RouteChanges)}
+	tx := transaction.Transaction{Backend: a.Net, Plan: p, AddressAdded: m.AddressAdded, AddressesAdded: append([]netip.Prefix(nil), m.AddressesAdded...), HostRouteAdded: m.HostRouteAdded, DefaultChanged: p.ReplaceDefault, RoutesChanged: len(m.RouteChanges), RoutesAdded: len(m.RoutesAdded), RulesAdded: len(m.RulesAdded)}
 	var errs []error
 	if e = backup.RestoreFiles(m.Files); e != nil {
 		errs = append(errs, e)
@@ -759,13 +792,39 @@ func (a *Application) ApplyProfile(path string) error {
 	if e != nil {
 		return e
 	}
+	interfaces := map[string]bool{c.State.Interface: true}
+	for _, route := range c.State.ManagedRoutes {
+		if route.Interface != "" {
+			interfaces[route.Interface] = true
+		}
+	}
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		if _, e = a.Net.Snapshot(c.State.Interface); e == nil {
+		ready := true
+		for iface := range interfaces {
+			state, snapshotErr := a.Net.Snapshot(iface)
+			if snapshotErr != nil {
+				ready = false
+				break
+			}
+			if iface == c.State.Interface {
+				continue
+			}
+			for _, route := range c.State.ManagedRoutes {
+				if route.Interface != iface || !route.Source.IsValid() {
+					continue
+				}
+				if _, present := network.HasAddress(state, route.Source); !present {
+					ready = false
+					break
+				}
+			}
+		}
+		if ready {
 			break
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("interface %s did not become ready", c.State.Interface)
+			return fmt.Errorf("network interfaces did not become ready")
 		}
 		time.Sleep(time.Second)
 	}
@@ -798,6 +857,11 @@ func (a *Application) ApplyDesiredState(current, desired network.State) error {
 	for _, route := range desired.ManagedRoutes {
 		if e := a.Net.ReplaceRoute(route); e != nil {
 			return fmt.Errorf("restore managed route: %w", e)
+		}
+	}
+	for _, rule := range desired.ManagedRules {
+		if e := a.Net.AddRule(rule); e != nil {
+			return fmt.Errorf("restore source rule: %w", e)
 		}
 	}
 	if e := a.Net.ReplaceRoute(desired.DefaultRoute); e != nil {

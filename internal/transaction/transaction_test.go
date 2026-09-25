@@ -56,6 +56,8 @@ type fake struct {
 	failAddAt      int
 	added, deleted []netip.Prefix
 	replaced       []network.Route
+	deletedRoutes  []network.Route
+	rules          []network.Rule
 }
 
 func (f *fake) Interfaces() ([]string, error) { return []string{"eth0"}, nil }
@@ -143,7 +145,24 @@ func TestRollbackRestoresCompetingRoutes(t *testing.T) {
 		t.Fatalf("replaced routes=%+v", f.replaced)
 	}
 }
-func (f *fake) DeleteRoute(network.Route) error { return nil }
+func (f *fake) DeleteRoute(route network.Route) error {
+	f.deletedRoutes = append(f.deletedRoutes, route)
+	return nil
+}
+func (f *fake) Rules() ([]network.Rule, error) { return append([]network.Rule(nil), f.rules...), nil }
+func (f *fake) AddRule(rule network.Rule) error {
+	f.rules = append(f.rules, rule)
+	return nil
+}
+func (f *fake) DeleteRule(rule network.Rule) error {
+	for i := range f.rules {
+		if f.rules[i] == rule {
+			f.rules = append(f.rules[:i], f.rules[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
 func TestApplyFailureRemovesOnlyAddedAddress(t *testing.T) {
 	p, _ := BuildPlan(baseState(), netip.MustParsePrefix("192.0.2.20/24"), netip.MustParseAddr("192.0.2.1"))
 	f := &fake{state: p.Before, failReplace: true}
@@ -153,6 +172,40 @@ func TestApplyFailureRemovesOnlyAddedAddress(t *testing.T) {
 	}
 	if len(f.deleted) != 1 || f.deleted[0].Addr() != netip.MustParseAddr("192.0.2.20") {
 		t.Fatalf("rollback deleted=%v", f.deleted)
+	}
+}
+
+func TestRollbackDeletesDefaultCreatedForRouteLessInterface(t *testing.T) {
+	before := network.State{
+		Interface: "eth1",
+		Addresses: []network.Address{{Prefix: netip.MustParsePrefix("104.167.197.74/24")}},
+		Routes:    []network.Route{{Destination: netip.MustParsePrefix("104.167.197.0/24"), Interface: "eth1", Table: 254, Scope: network.ScopeLink}},
+	}
+	p, err := BuildPlan(before, netip.MustParsePrefix("104.167.197.74/24"), netip.MustParseAddr("104.167.197.1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.RoutesToAdd = []network.Route{{Gateway: netip.MustParseAddr("104.167.197.1"), Source: netip.MustParseAddr("104.167.197.74"), Interface: "eth1", Table: 1074}}
+	p.RulesToAdd = []network.Rule{{Source: netip.MustParsePrefix("104.167.197.74/32"), Table: 1074, Priority: 1074}}
+	f := &fake{state: before}
+	tx := Transaction{Backend: f, Plan: p}
+	if err = tx.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.rules) != 0 {
+		t.Fatalf("rules survived rollback: %+v", f.rules)
+	}
+	foundDefault := false
+	for _, route := range f.deletedRoutes {
+		if route == p.Target.DefaultRoute {
+			foundDefault = true
+		}
+	}
+	if !foundDefault {
+		t.Fatalf("created default route was not deleted: %+v", f.deletedRoutes)
 	}
 }
 

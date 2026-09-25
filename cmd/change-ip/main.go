@@ -20,7 +20,7 @@ import (
 )
 
 // Release builds override this value from the Git tag with -ldflags.
-var version = "3.0.2-dev"
+var version = "3.2.0-dev"
 
 func usage() {
 	fmt.Printf(`change-ip %s — make a provider-assigned IPv4 the outbound source
@@ -30,7 +30,7 @@ Usage:
   change-ip NEW_IP[/PREFIX] [IFACE]
   change-ip add-address IP/PREFIX [IP/PREFIX ...]
   change-ip set-gateway GATEWAY
-  change-ip set-interface IFACE [--source IP]
+  change-ip set-interface IFACE [--source IP] [--gateway GW]
   change-ip status [IFACE]
   change-ip doctor [IFACE]
   change-ip rollback [BACKUP_DIR]

@@ -16,6 +16,8 @@ type Plan struct {
 	HostRouteToAdd    *network.Route        `json:"host_route_to_add,omitempty"`
 	ReplaceDefault    bool                  `json:"replace_default"`
 	RouteChanges      []network.RouteChange `json:"route_changes,omitempty"`
+	RoutesToAdd       []network.Route       `json:"routes_to_add,omitempty"`
+	RulesToAdd        []network.Rule        `json:"rules_to_add,omitempty"`
 	VerifyGlobal      bool                  `json:"verify_global,omitempty"`
 	DisableInterfaces []string              `json:"disable_interfaces,omitempty"`
 }
@@ -28,6 +30,8 @@ type Transaction struct {
 	HostRouteAdded bool
 	DefaultChanged bool
 	RoutesChanged  int
+	RoutesAdded    int
+	RulesAdded     int
 	Committed      bool
 }
 
@@ -59,6 +63,10 @@ func BuildPlan(before network.State, targetPrefix netip.Prefix, gateway netip.Ad
 	target.OutboundSource = targetPrefix.Addr()
 	target.DefaultRoute.Gateway = gateway
 	target.DefaultRoute.Source = targetPrefix.Addr()
+	target.DefaultRoute.Interface = before.Interface
+	if target.DefaultRoute.Table == 0 {
+		target.DefaultRoute.Table = 254
+	}
 	target.DefaultRoute.OnLink = false
 	if before.GatewayHostRoute == nil || before.GatewayHostRoute.Destination.Addr() != gateway {
 		target.GatewayHostRoute = nil
@@ -83,7 +91,7 @@ func BuildPlan(before network.State, targetPrefix netip.Prefix, gateway netip.Ad
 		}
 	}
 	if !covered && (before.GatewayHostRoute == nil || before.GatewayHostRoute.Destination.Addr() != gateway) {
-		r := network.Route{Destination: netip.PrefixFrom(gateway, 32), Interface: before.Interface, Table: before.DefaultRoute.Table, Scope: network.ScopeLink}
+		r := network.Route{Destination: netip.PrefixFrom(gateway, 32), Interface: before.Interface, Table: plan.Target.DefaultRoute.Table, Scope: network.ScopeLink}
 		plan.HostRouteToAdd = &r
 		plan.Target.GatewayHostRoute = &r
 		plan.Target.DefaultRoute.OnLink = true
@@ -136,17 +144,29 @@ func (t *Transaction) Apply() error {
 		}
 		t.HostRouteAdded = true
 	}
+	for _, change := range t.Plan.RouteChanges {
+		if e := t.Backend.ReplaceRoute(change.Target); e != nil {
+			return t.fail("replace competing default route", e)
+		}
+		t.RoutesChanged++
+	}
 	if t.Plan.ReplaceDefault {
 		if e := t.Backend.ReplaceRoute(t.Plan.Target.DefaultRoute); e != nil {
 			return t.fail("replace default route", e)
 		}
 		t.DefaultChanged = true
 	}
-	for _, change := range t.Plan.RouteChanges {
-		if e := t.Backend.ReplaceRoute(change.Target); e != nil {
-			return t.fail("replace competing default route", e)
+	for _, route := range t.Plan.RoutesToAdd {
+		if e := t.Backend.ReplaceRoute(route); e != nil {
+			return t.fail("add source route", e)
 		}
-		t.RoutesChanged++
+		t.RoutesAdded++
+	}
+	for _, rule := range t.Plan.RulesToAdd {
+		if e := t.Backend.AddRule(rule); e != nil {
+			return t.fail("add source rule", e)
+		}
+		t.RulesAdded++
 	}
 	return nil
 }
@@ -195,22 +215,60 @@ func (t *Transaction) Verify() error {
 			return fmt.Errorf("global default uses %s src %s, expected %s src %s", r.Interface, r.Source, t.Plan.Target.Interface, src)
 		}
 	}
+	if len(t.Plan.Target.ManagedRules) > 0 {
+		rules, err := t.Backend.Rules()
+		if err != nil {
+			return err
+		}
+		for _, wanted := range t.Plan.Target.ManagedRules {
+			found := false
+			for _, rule := range rules {
+				if rule == wanted {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("source routing for %s is missing", wanted.Source.Addr())
+			}
+		}
+	}
 	return nil
 }
 func (t *Transaction) Rollback() error {
 	var errs []error
+	for i := t.RulesAdded - 1; i >= 0; i-- {
+		if e := t.Backend.DeleteRule(t.Plan.RulesToAdd[i]); e != nil {
+			errs = append(errs, fmt.Errorf("delete added source rule: %w", e))
+		} else {
+			t.RulesAdded--
+		}
+	}
+	for i := t.RoutesAdded - 1; i >= 0; i-- {
+		if e := t.Backend.DeleteRoute(t.Plan.RoutesToAdd[i]); e != nil {
+			errs = append(errs, fmt.Errorf("delete added source route: %w", e))
+		} else {
+			t.RoutesAdded--
+		}
+	}
+	if t.DefaultChanged {
+		var e error
+		if t.Plan.Before.DefaultRoute.Interface == "" {
+			e = t.Backend.DeleteRoute(t.Plan.Target.DefaultRoute)
+		} else {
+			e = t.Backend.ReplaceRoute(t.Plan.Before.DefaultRoute)
+		}
+		if e != nil {
+			errs = append(errs, fmt.Errorf("restore default route: %w", e))
+		} else {
+			t.DefaultChanged = false
+		}
+	}
 	for i := t.RoutesChanged - 1; i >= 0; i-- {
 		if e := t.Backend.ReplaceRoute(t.Plan.RouteChanges[i].Before); e != nil {
 			errs = append(errs, fmt.Errorf("restore competing default route: %w", e))
 		} else {
 			t.RoutesChanged--
-		}
-	}
-	if t.DefaultChanged {
-		if e := t.Backend.ReplaceRoute(t.Plan.Before.DefaultRoute); e != nil {
-			errs = append(errs, fmt.Errorf("restore default route: %w", e))
-		} else {
-			t.DefaultChanged = false
 		}
 	}
 	if t.HostRouteAdded && t.Plan.HostRouteToAdd != nil {

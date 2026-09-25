@@ -51,10 +51,10 @@ func (u *UI) home() error {
 	selected := 0
 	for {
 		items := []string{
-			u.t("Change address", "Сменить адрес"),
+			u.t("Change outbound IP", "Сменить исходящий IP"),
 			u.t("Add IPv4 addresses", "Добавить IPv4-адреса"),
 			u.t("Change gateway", "Изменить шлюз"),
-			u.t("Change default interface", "Изменить основной интерфейс"),
+			u.t("Choose main connection", "Выбрать основное подключение"),
 			u.t("Status", "Статус"),
 			u.t("Doctor", "Диагностика"),
 			u.t("Rollback", "Откат"),
@@ -80,19 +80,19 @@ func (u *UI) home() error {
 				switch selected {
 				case 0:
 					if err := u.changeAddress(status); err != nil {
-						u.message("ChangeIP", "✕ "+err.Error(), "")
+						u.message("ChangeIP", "✕ "+u.localizeError(err), "")
 					}
 				case 1:
 					if err := u.addAddresses(status); err != nil {
-						u.message("ChangeIP", "✕ "+err.Error(), "")
+						u.message("ChangeIP", "✕ "+u.localizeError(err), "")
 					}
 				case 2:
 					if err := u.changeGateway(status); err != nil {
-						u.message("ChangeIP", "✕ "+err.Error(), "")
+						u.message("ChangeIP", "✕ "+u.localizeError(err), "")
 					}
 				case 3:
 					if err := u.changeDefaultInterface(); err != nil {
-						u.message("ChangeIP", "✕ "+err.Error(), "")
+						u.message("ChangeIP", "✕ "+u.localizeError(err), "")
 					}
 				case 4:
 					u.detail(status, false)
@@ -243,7 +243,7 @@ func (u *UI) changeDefaultInterface() error {
 	if len(interfaces) == 0 {
 		return fmt.Errorf("no usable network interfaces")
 	}
-	selected, ok := u.choose(u.t("Change default interface", "Изменение основного интерфейса"), interfaces, u.t("↑↓ navigate   enter select   esc back", "↑↓ навигация   enter выбрать   esc назад"))
+	selected, ok := u.choose(u.t("Choose main connection", "Выберите основное подключение"), interfaces, u.t("↑↓ navigate   enter select   esc back", "↑↓ навигация   enter выбрать   esc назад"))
 	if !ok {
 		return nil
 	}
@@ -252,6 +252,9 @@ func (u *UI) changeDefaultInterface() error {
 		return err
 	}
 	o := app.Options{Interface: interfaces[selected]}
+	if len(status.State.Addresses) == 0 {
+		return fmt.Errorf("no usable IPv4 address on %s", status.State.Interface)
+	}
 	if len(status.State.Addresses) > 1 {
 		items := make([]string, 0, len(status.State.Addresses))
 		for _, address := range status.State.Addresses {
@@ -264,6 +267,18 @@ func (u *UI) changeDefaultInterface() error {
 		o.Target = status.State.Addresses[address].Prefix.Addr().String()
 	}
 	plan, err := u.app.ResolveDefaultInterface(o)
+	if err != nil && strings.Contains(err.Error(), "no gateway is configured") {
+		gateway, accepted := u.input(
+			u.t("Connection setup", "Настройка подключения"),
+			u.t("Provider gateway", "Шлюз от провайдера"),
+			"",
+		)
+		if !accepted {
+			return nil
+		}
+		o.Gateway = gateway
+		plan, err = u.app.ResolveDefaultInterface(o)
+	}
 	if err != nil {
 		return err
 	}
@@ -274,7 +289,7 @@ func (u *UI) changeDefaultInterface() error {
 	if interrupted || err != nil {
 		return err
 	}
-	u.message("ChangeIP", fmt.Sprintf(u.t("✓ Default interface changed to %s", "✓ Основной интерфейс изменён на %s"), plan.Target.Interface), "")
+	u.message("ChangeIP", fmt.Sprintf(u.t("✓ Main connection changed to %s", "✓ Основное подключение изменено на %s"), plan.Target.Interface), "")
 	return nil
 }
 
@@ -302,116 +317,110 @@ func (u *UI) renderHome(s diagnostics.Status, items []string, selected int) stri
 }
 
 func (u *UI) changeAddress(s diagnostics.Status) error {
-	items := make([]string, 0, len(s.State.Addresses)+1)
-	for _, address := range s.State.Addresses {
-		label := address.Prefix.String()
-		if address.Prefix.Addr() == s.State.OutboundSource {
-			label += u.t("    current", "    текущий")
+	type addressChoice struct {
+		interfaceName string
+		prefix        netip.Prefix
+	}
+	var choices []addressChoice
+	var items []string
+	names, err := u.app.Net.Interfaces()
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if !network.InterfaceAllowed(name) {
+			continue
 		}
-		items = append(items, label)
+		state, snapshotErr := u.app.Net.Snapshot(name)
+		if snapshotErr != nil {
+			continue
+		}
+		for _, address := range state.Addresses {
+			label := fmt.Sprintf("%-18s %s", address.Prefix, name)
+			if name == s.State.Interface && address.Prefix.Addr() == s.State.OutboundSource {
+				label += u.t("    current", "    текущий")
+			}
+			choices = append(choices, addressChoice{interfaceName: name, prefix: address.Prefix})
+			items = append(items, label)
+		}
 	}
 	items = append(items, u.t("+ Add another IPv4", "+ Добавить другой IPv4"))
-	selected, ok := u.choose("ChangeIP\n\n"+u.t("Select IPv4 for ", "Выберите IPv4 для ")+s.State.Interface, items, u.t("↑↓ navigate   enter select   esc back", "↑↓ навигация   enter выбрать   esc назад"))
+	selected, ok := u.choose("ChangeIP\n\n"+u.t("Select the outbound IPv4", "Выберите исходящий IPv4"), items, u.t("↑↓ navigate   enter select   esc back", "↑↓ навигация   enter выбрать   esc назад"))
 	if !ok {
 		return nil
 	}
-	o := app.Options{Interface: s.State.Interface, Profile: "/etc/change-ip-addresses.conf"}
+	o := app.Options{Profile: "/etc/change-ip-addresses.conf"}
 	var plan transaction.Plan
-	planned := false
-	if selected < len(s.State.Addresses) {
-		o.Target = s.State.Addresses[selected].Prefix.String()
+	var operation uiOperation
+	if selected < len(choices) {
+		choice := choices[selected]
+		o.Interface = choice.interfaceName
+		if choice.interfaceName == s.State.Interface {
+			o.Target = choice.prefix.String()
+			plan, err = u.app.Resolve(o)
+			operation = u.app.Apply
+		} else {
+			o.Target = choice.prefix.Addr().String()
+			plan, err = u.app.ResolveDefaultInterface(o)
+			operation = u.app.ChangeDefaultInterface
+		}
 	} else {
+		o.Interface = s.State.Interface
 		address, ok := u.input(u.t("Add IPv4", "Добавление IPv4"), u.t("Address", "Адрес"), "")
 		if !ok {
 			return nil
 		}
 		o.Target = address
-		if inferred, resolveErr := u.app.Resolve(o); resolveErr == nil {
-			plan, planned = inferred, true
-		} else {
+		plan, err = u.app.Resolve(o)
+		if err != nil && strings.Contains(err.Error(), "prefix required for new IP") {
 			prefix, ok := u.input(u.t("Add IPv4", "Добавление IPv4"), u.t("Prefix", "Префикс"), "")
 			if !ok {
 				return nil
 			}
 			o.Prefix = prefix
-			if inferred, resolveErr = u.app.Resolve(o); resolveErr == nil {
-				plan, planned = inferred, true
-			} else if strings.Contains(resolveErr.Error(), "no IPv4 gateway") {
-				gateway, gatewayOK := u.input(u.t("Add IPv4", "Добавление IPv4"), u.t("Gateway", "Шлюз"), "")
-				if !gatewayOK {
-					return nil
-				}
-				o.Gateway = gateway
+			plan, err = u.app.Resolve(o)
+		}
+		if err != nil && strings.Contains(err.Error(), "no gateway is configured") {
+			gateway, gatewayOK := u.input(u.t("Add IPv4", "Добавление IPv4"), u.t("Provider gateway", "Шлюз от провайдера"), "")
+			if !gatewayOK {
+				return nil
 			}
+			o.Gateway = gateway
+			plan, err = u.app.Resolve(o)
+		}
+		operation = u.app.Apply
+	}
+	if err != nil && strings.Contains(err.Error(), "no gateway is configured") {
+		gateway, accepted := u.input(u.t("Connection setup", "Настройка подключения"), u.t("Provider gateway", "Шлюз от провайдера"), "")
+		if !accepted {
+			return nil
+		}
+		o.Gateway = gateway
+		if selected < len(choices) && choices[selected].interfaceName != s.State.Interface {
+			plan, err = u.app.ResolveDefaultInterface(o)
+		} else {
+			plan, err = u.app.Resolve(o)
 		}
 	}
-	if !planned {
-		var err error
-		plan, err = u.app.Resolve(o)
-		if err != nil {
-			return err
-		}
+	if err != nil {
+		return err
 	}
 	if !u.review(plan) {
 		return nil
 	}
-	completed := make(map[string]bool)
-	u.term.draw(u.renderProgress(plan, completed))
-	oldOut, oldErr := u.app.Out, u.app.Err
-	var log strings.Builder
-	u.app.Out, u.app.Err = &log, &log
-	o.Yes = true
-	o.Progress = func(stage string) {
-		completed[stage] = true
-		u.term.draw(u.renderProgress(plan, completed))
-	}
-	applySignals := make(chan os.Signal, 1)
-	applyDone := make(chan struct{})
-	interrupted := make(chan struct{}, 1)
-	go func() {
-		for {
-			select {
-			case k, ok := <-u.term.keys:
-				if !ok || k == keyInterrupt {
-					interrupted <- struct{}{}
-					applySignals <- syscall.SIGINT
-					return
-				}
-			case sig := <-u.signals:
-				interrupted <- struct{}{}
-				applySignals <- sig
-				return
-			case <-applyDone:
-				return
-			}
-		}
-	}()
-	backupDir, applyErr := u.app.Apply(o, applySignals)
-	close(applyDone)
-	u.app.Out, u.app.Err = oldOut, oldErr
-	select {
-	case <-interrupted:
-		u.quit = true
+	backupDir, interrupted, applyErr := u.runOperation(plan, o, operation)
+	if interrupted {
 		return nil
-	default:
 	}
 	if applyErr != nil {
-		rollback := u.t("– not required", "– не требовался")
-		if backupDir != "" {
-			rollback = u.t("✓ completed automatically", "✓ выполнен автоматически")
-		}
-		if strings.Contains(applyErr.Error(), "rollback:") || strings.Contains(applyErr.Error(), "rollback persistence") {
-			rollback = u.t("✕ incomplete", "✕ выполнен не полностью")
-		}
-		u.message("ChangeIP\n\n"+u.t("✕ Operation failed", "✕ Операция завершилась ошибкой"), applyErr.Error(), u.t("Rollback", "Откат")+"\n  "+rollback)
-		return nil
+		return applyErr
 	}
 	fresh, err := u.app.Collect(plan.Target.Interface)
 	if err != nil {
 		return err
 	}
 	var body strings.Builder
-	fmt.Fprintf(&body, "%s\n\n%s → %s\n\n%s\n\n", u.t("✓ IP changed successfully", "✓ IP успешно изменён"), plan.Before.OutboundSource, fresh.State.OutboundSource, u.t("Network", "Сеть"))
+	fmt.Fprintf(&body, "%s\n\n%s → %s\n\n%s\n\n", u.t("✓ IP changed successfully", "✓ IP успешно изменён"), s.State.OutboundSource, fresh.State.OutboundSource, u.t("Network", "Сеть"))
 	u.writeNetwork(&body, fresh.State)
 	if backupDir != "" {
 		fmt.Fprintf(&body, "\n%-17s%s\n", u.t("Backup", "Резервная копия"), filepath.Base(backupDir))
@@ -422,31 +431,37 @@ func (u *UI) changeAddress(s diagnostics.Status) error {
 
 func (u *UI) review(p transaction.Plan) bool {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n\n%s  →  %s\n\n", u.title(), p.Before.OutboundSource, p.Target.OutboundSource)
-	fmt.Fprintf(&b, "%-15s%s\n%-15s/%d\n%-15s%s", u.t("Interface", "Интерфейс"), p.Target.Interface, u.t("Prefix", "Префикс"), targetPrefix(p).Bits(), u.t("Gateway", "Шлюз"), p.Target.DefaultRoute.Gateway)
-	if p.Target.DefaultRoute.OnLink {
-		fmt.Fprint(&b, " · on-link")
+	previous := p.Before.OutboundSource.String()
+	if !p.Before.OutboundSource.IsValid() {
+		previous = u.t("current IP", "текущий IP")
 	}
-	fmt.Fprintf(&b, "\n%-15s%s\n\n%s\n\n", u.t("Route", "Маршрут"), u.routeLabel(p.Target.DefaultRoute), u.t("Changes", "Изменения"))
+	fmt.Fprintf(&b, "%s\n\n%s  →  %s\n\n", u.title(), previous, p.Target.OutboundSource)
+	fmt.Fprintf(&b, "%-15s%s\n%-15s/%d\n%-15s%s", u.t("Connection", "Подключение"), p.Target.Interface, u.t("Prefix", "Префикс"), targetPrefix(p).Bits(), u.t("Gateway", "Шлюз"), p.Target.DefaultRoute.Gateway)
+	fmt.Fprintf(&b, "\n\n%s\n\n", u.t("What ChangeIP will do", "Что сделает ChangeIP"))
 	fmt.Fprintln(&b, u.t("  ✓ Existing addresses preserved", "  ✓ Существующие адреса будут сохранены"))
 	if p.AddressToAdd != nil {
 		fmt.Fprintf(&b, u.t("  • Address %s will be added\n", "  • Будет добавлен адрес %s\n"), p.AddressToAdd)
 	}
-	if p.Before.DefaultRoute.Gateway == p.Target.DefaultRoute.Gateway {
+	if p.Before.DefaultRoute.Interface == "" {
+		fmt.Fprintln(&b, u.t("  • Configure this connection for internet access", "  • Настроит это подключение для выхода в интернет"))
+	} else if p.Before.DefaultRoute.Gateway == p.Target.DefaultRoute.Gateway {
 		fmt.Fprintln(&b, u.t("  ✓ Gateway unchanged", "  ✓ Шлюз не изменится"))
 	} else {
 		fmt.Fprintf(&b, "\n%s\n"+u.t("  Gateway will change: %s → %s\n  An incorrect gateway can disconnect this server.\n", "  Шлюз изменится: %s → %s\n  Неверный шлюз может отключить сервер от сети.\n"), u.yellow(u.t("Warning", "Предупреждение")), p.Before.DefaultRoute.Gateway, p.Target.DefaultRoute.Gateway)
 	}
 	if p.HostRouteToAdd != nil {
-		fmt.Fprintf(&b, u.t("  • /32 gateway route will be created for %s\n", "  • Для шлюза %s будет создан маршрут /32\n"), p.Target.DefaultRoute.Gateway)
+		fmt.Fprintln(&b, u.t("  • Configure access to the provider gateway", "  • Настроит доступ к шлюзу провайдера"))
 	}
 	if targetPrefix(p).Bits() == 32 {
-		fmt.Fprintln(&b, u.t("  ! Target address uses /32", "  ! Целевой адрес использует /32"))
+		fmt.Fprintln(&b, u.t("  ✓ Provider /32 address is supported", "  ✓ Адрес провайдера с /32 поддерживается"))
 	}
 	if p.Before.OutboundSource != p.Target.OutboundSource {
-		fmt.Fprintln(&b, u.t("  • Default source will change", "  • Исходящий source-адрес изменится"))
+		fmt.Fprintln(&b, u.t("  • Change the public outbound IP", "  • Изменит публичный исходящий IP"))
 	} else {
-		fmt.Fprintln(&b, u.t("  ✓ Default source already selected", "  ✓ Этот source-адрес уже выбран"))
+		fmt.Fprintln(&b, u.t("  ✓ This outbound IP is already selected", "  ✓ Этот исходящий IP уже выбран"))
+	}
+	if len(p.Target.ManagedRules) > 0 {
+		fmt.Fprintln(&b, u.t("  ✓ Keep every IP reachable through its own connection", "  ✓ Сохранит доступность каждого IP через его подключение"))
 	}
 	fmt.Fprintln(&b, u.t("  • Persistence will be updated", "  • Автозагрузка будет обновлена"))
 	choice, ok := u.choose(b.String(), []string{u.t("Apply", "Применить"), u.t("Cancel", "Отмена")}, u.t("↑↓ navigate   enter select   esc cancel", "↑↓ навигация   enter выбрать   esc отмена"))
@@ -473,7 +488,7 @@ func (u *UI) renderProgress(p transaction.Plan, complete map[string]bool) string
 		fmt.Fprintf(&b, "%s %s\n", mark(app.ProgressGateway), u.t("Gateway route", "Маршрут до шлюза"))
 	}
 	if p.ReplaceDefault {
-		fmt.Fprintf(&b, "%s %s\n", mark(app.ProgressDefault), u.t("Default route", "Маршрут по умолчанию"))
+		fmt.Fprintf(&b, "%s %s\n", mark(app.ProgressDefault), u.t("Main connection", "Основное подключение"))
 	}
 	fmt.Fprintf(&b, "%s %s\n%s %s\n", mark(app.ProgressPersistence), u.t("Persistence", "Автозагрузка"), mark(app.ProgressVerify), u.t("Verification", "Проверка"))
 	return b.String()
@@ -489,9 +504,9 @@ func (u *UI) detail(s diagnostics.Status, doctor bool) {
 			matches []string
 		}{
 			{u.t("Address", "Адрес"), []string{"target IP"}},
-			{u.t("Outbound source", "Исходящий source"), []string{"outbound source"}},
+			{u.t("Outbound IP", "Исходящий IP"), []string{"outbound source"}},
 			{u.t("Gateway", "Шлюз"), []string{"gateway"}},
-			{u.t("Default route", "Маршрут по умолчанию"), []string{"default route"}},
+			{u.t("IP connections", "Подключения IP"), []string{"default route", "return path", "multiple interfaces"}},
 			{u.t("Persistence", "Автозагрузка"), []string{"persistence", "apply configuration", "unfinished transaction"}},
 			{"systemd", []string{"unit"}},
 		}
@@ -685,7 +700,15 @@ func writeMenu(b *strings.Builder, items []string, selected int, u *UI) {
 }
 
 func (u *UI) writeNetwork(b *strings.Builder, s network.State) {
-	fmt.Fprintf(b, "  %-15s%s\n  %-15s%s\n  %-15s%s\n  %-15s%s\n", u.t("Interface", "Интерфейс"), s.Interface, u.t("Outbound", "Исходящий IP"), s.OutboundSource, u.t("Gateway", "Шлюз"), s.DefaultRoute.Gateway, u.t("Route", "Маршрут"), u.routeLabel(s.DefaultRoute))
+	gateway := s.DefaultRoute.Gateway.String()
+	if !s.DefaultRoute.Gateway.IsValid() {
+		gateway = u.t("not configured", "не настроен")
+	}
+	outbound := s.OutboundSource.String()
+	if !s.OutboundSource.IsValid() {
+		outbound = u.t("not selected", "не выбран")
+	}
+	fmt.Fprintf(b, "  %-15s%s\n  %-15s%s\n  %-15s%s\n", u.t("Connection", "Подключение"), s.Interface, u.t("Outbound IP", "Исходящий IP"), outbound, u.t("Gateway", "Шлюз"), gateway)
 }
 
 func (u *UI) writeAddresses(b *strings.Builder, s network.State) {

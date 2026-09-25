@@ -34,9 +34,8 @@ func TestHomeShowsNetworkCIDRsAndPlainTextSelection(t *testing.T) {
 	}, []string{"Change address", "Exit"}, 0)
 	for _, want := range []string{
 		"ChangeIP 3.1.0",
-		"Interface      eth0",
-		"Outbound       192.0.2.10",
-		"main · metric 100",
+		"Connection     eth0",
+		"Outbound IP    192.0.2.10",
 		"192.0.2.10/24",
 		"current outbound",
 		"192.0.2.11/32",
@@ -88,7 +87,7 @@ func TestRussianHomeTranslation(t *testing.T) {
 		UnitActive:       "active",
 		GatewayReachable: true,
 	}, []string{"Сменить адрес", "Язык · Русский"}, 1)
-	for _, want := range []string{"Сеть", "Интерфейс", "Исходящий IP", "Шлюз", "IPv4-адреса", "текущий исходящий", "Автозагрузка", "Состояние", "Язык · Русский"} {
+	for _, want := range []string{"Сеть", "Подключение", "Исходящий IP", "Шлюз", "IPv4-адреса", "текущий исходящий", "Автозагрузка", "Состояние", "Язык · Русский"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Russian screen does not contain %q:\n%s", want, got)
 		}

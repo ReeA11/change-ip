@@ -13,7 +13,12 @@ import (
 func TestWriteAndLoad(t *testing.T) {
 	root := t.TempDir()
 	s := &Systemd{BinaryPath: "/usr/local/sbin/change-ip", ConfigDir: filepath.Join(root, "lib"), UnitDir: filepath.Join(root, "units"), Run: func(string, ...string) error { return nil }}
-	state := network.State{Interface: "eth0", OutboundSource: netip.MustParseAddr("192.0.2.20"), DefaultRoute: network.Route{Interface: "eth0", Gateway: netip.MustParseAddr("192.0.2.1"), Source: netip.MustParseAddr("192.0.2.20"), Table: 254, Metric: 10}}
+	state := network.State{
+		Interface:      "eth0",
+		OutboundSource: netip.MustParseAddr("192.0.2.20"),
+		DefaultRoute:   network.Route{Interface: "eth0", Gateway: netip.MustParseAddr("192.0.2.1"), Source: netip.MustParseAddr("192.0.2.20"), Table: 254, Metric: 10},
+		ManagedRules:   []network.Rule{{Source: netip.MustParsePrefix("192.0.2.20/32"), Table: 12020, Priority: 12020}},
+	}
 	cfg, unit, e := s.Write(state)
 	if e != nil {
 		t.Fatal(e)
@@ -24,6 +29,9 @@ func TestWriteAndLoad(t *testing.T) {
 	}
 	if got.State.OutboundSource != state.OutboundSource {
 		t.Fatal("state changed")
+	}
+	if len(got.State.ManagedRules) != 1 || got.State.ManagedRules[0] != state.ManagedRules[0] {
+		t.Fatalf("managed rules changed: %+v", got.State.ManagedRules)
 	}
 	b, _ := os.ReadFile(unit)
 	if strings.Contains(string(b), "/bin/sh") || !strings.Contains(string(b), "apply-profile --config") {

@@ -1,4 +1,4 @@
-.TH CHANGE-IP 8 "September 2026" "ChangeIP 3.0" "System Administration"
+.TH CHANGE-IP 8 "September 2026" "ChangeIP 3.2" "System Administration"
 .SH NAME
 change-ip \- make a provider-issued IPv4 the default outbound source
 .SH SYNOPSIS
@@ -16,6 +16,12 @@ Adds or reuses an IPv4 address and makes it the explicit source of the selected
 default IPv4 route through Linux netlink. Existing addresses and IPv6 are kept.
 Metric and routing table are preserved. Off-subnet and /32 gateways use a
 link-scope host route and onlink.
+.PP
+Provider interfaces without an existing default route are supported. ChangeIP
+can infer an in-prefix gateway from the active connection or accepts an
+explicit gateway. Per-address source rules keep replies on the interface that
+owns each address. Duplicate addresses on different interfaces are rejected
+before mutation.
 .PP
 Persistence is a generated systemd oneshot invoking ChangeIP after
 network-online.target. It does not replace cloud-init, Netplan, NetworkManager,
@@ -37,7 +43,8 @@ Show addresses, outbound source, gateway, default route, desired boot state,
 and systemd unit state.
 .TP
 .B doctor [INTERFACE]
-Diagnose drift, missing/failed configuration, and unfinished transactions.
+Diagnose drift, missing/failed configuration, duplicate addresses, missing
+per-address return paths, and unfinished transactions.
 .TP
 .B rollback [BACKUP_DIR]
 Restore a versioned JSON backup. Without a directory, show a TTY menu.

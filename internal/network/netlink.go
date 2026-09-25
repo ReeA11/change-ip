@@ -141,14 +141,16 @@ func (b *NetlinkBackend) Snapshot(name string) (State, error) {
 			selection = matched
 		}
 	}
-	def, err := SelectDefault(selection, name)
-	if err != nil {
-		return State{}, err
+	// Additional provider interfaces frequently have an address but no
+	// default route. Keep them inspectable so the application can configure
+	// the missing route instead of rejecting the interface.
+	def, selectErr := SelectDefault(selection, name)
+	if selectErr == nil {
+		state.DefaultRoute = def
 	}
-	state.DefaultRoute = def
-	if def.Gateway.IsValid() {
+	if state.DefaultRoute.Gateway.IsValid() {
 		for _, r := range routes {
-			if r.Destination.IsValid() && r.Destination.Bits() == 32 && r.Destination.Addr() == def.Gateway && !r.Gateway.IsValid() && r.Scope == ScopeLink {
+			if r.Destination.IsValid() && r.Destination.Bits() == 32 && r.Destination.Addr() == state.DefaultRoute.Gateway && !r.Gateway.IsValid() && r.Scope == ScopeLink {
 				x := r
 				state.GatewayHostRoute = &x
 				break
@@ -230,6 +232,47 @@ func (b *NetlinkBackend) DeleteRoute(r Route) error {
 		return e
 	}
 	err := netlink.RouteDel(&nr)
+	if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ESRCH) {
+		return nil
+	}
+	return err
+}
+
+func (b *NetlinkBackend) Rules() ([]Rule, error) {
+	rules, err := netlink.RuleList(netlink.FAMILY_V4)
+	if err != nil {
+		return nil, fmt.Errorf("list IPv4 rules: %w", err)
+	}
+	out := make([]Rule, 0, len(rules))
+	for _, rule := range rules {
+		var source netip.Prefix
+		if rule.Src != nil {
+			source = prefixFromNet(rule.Src)
+		}
+		out = append(out, Rule{Source: source, Table: rule.Table, Priority: rule.Priority})
+	}
+	return out, nil
+}
+
+func nlRule(rule Rule) *netlink.Rule {
+	nr := netlink.NewRule()
+	nr.Family = netlink.FAMILY_V4
+	nr.Src = prefixIPNet(rule.Source)
+	nr.Table = rule.Table
+	nr.Priority = rule.Priority
+	return nr
+}
+
+func (b *NetlinkBackend) AddRule(rule Rule) error {
+	err := netlink.RuleAdd(nlRule(rule))
+	if errors.Is(err, unix.EEXIST) {
+		return nil
+	}
+	return err
+}
+
+func (b *NetlinkBackend) DeleteRule(rule Rule) error {
+	err := netlink.RuleDel(nlRule(rule))
 	if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ESRCH) {
 		return nil
 	}

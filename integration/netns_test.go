@@ -170,3 +170,103 @@ func TestNetNSHelper(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestMultiInterfaceSourceRouting(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root/CAP_NET_ADMIN")
+	}
+	if _, err := exec.LookPath("ip"); err != nil {
+		t.Skip("iproute2 required")
+	}
+	suffix := fmt.Sprint(time.Now().UnixNano() % 100000)
+	ns := "cim" + suffix
+	host0, peer0 := "mh0"+suffix, "mn0"+suffix
+	host1, peer1 := "mh1"+suffix, "mn1"+suffix
+	ip(t, "netns", "add", ns)
+	defer exec.Command("ip", "netns", "del", ns).Run()
+	for _, pair := range [][2]string{{host0, peer0}, {host1, peer1}} {
+		ip(t, "link", "add", pair[0], "type", "veth", "peer", "name", pair[1])
+		defer exec.Command("ip", "link", "del", pair[0]).Run()
+		ip(t, "link", "set", pair[1], "netns", ns)
+	}
+	ip(t, "addr", "add", "192.0.2.1/24", "dev", host0)
+	ip(t, "addr", "add", "198.51.100.1/24", "dev", host1)
+	ip(t, "link", "set", host0, "up")
+	ip(t, "link", "set", host1, "up")
+	ip(t, "-n", ns, "link", "set", "lo", "up")
+	ip(t, "-n", ns, "addr", "add", "192.0.2.10/24", "dev", peer0)
+	ip(t, "-n", ns, "addr", "add", "198.51.100.10/24", "dev", peer1)
+	ip(t, "-n", ns, "link", "set", peer0, "up")
+	ip(t, "-n", ns, "link", "set", peer1, "up")
+	ip(t, "-n", ns, "route", "add", "default", "via", "192.0.2.1", "dev", peer0, "src", "192.0.2.10")
+	self, _ := os.Executable()
+	cmd := exec.Command("ip", "netns", "exec", ns, self, "-test.run=TestMultiNetNSHelper")
+	cmd.Env = append(os.Environ(), "CHANGEIP_MULTI_HELPER=1", "CHANGEIP_PRIMARY="+peer0, "CHANGEIP_SECONDARY="+peer1)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("helper: %v\n%s", err, output)
+	}
+}
+
+func TestMultiNetNSHelper(t *testing.T) {
+	if os.Getenv("CHANGEIP_MULTI_HELPER") != "1" {
+		return
+	}
+	primary := os.Getenv("CHANGEIP_PRIMARY")
+	secondary := os.Getenv("CHANGEIP_SECONDARY")
+	backend := network.NewNetlinkBackend()
+	secondaryBefore, err := backend.Snapshot(secondary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondaryBefore.DefaultRoute.Interface != "" {
+		t.Fatalf("secondary unexpectedly has a default route: %+v", secondaryBefore.DefaultRoute)
+	}
+	manualRoutes := []network.Route{
+		{Destination: netip.MustParsePrefix("198.51.100.0/24"), Source: netip.MustParseAddr("198.51.100.10"), Interface: secondary, Table: 1074, Scope: network.ScopeLink},
+		{Gateway: netip.MustParseAddr("198.51.100.1"), Source: netip.MustParseAddr("198.51.100.10"), Interface: secondary, Table: 1074},
+	}
+	for _, route := range manualRoutes {
+		if err = backend.ReplaceRoute(route); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manualRule := network.Rule{Source: netip.MustParsePrefix("198.51.100.10/32"), Table: 1074, Priority: 1074}
+	if err = backend.AddRule(manualRule); err != nil {
+		t.Fatal(err)
+	}
+	application := app.New(backend, "/usr/local/sbin/change-ip")
+	plan, err := application.ResolveDefaultInterface(app.Options{Interface: secondary, Gateway: "198.51.100.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Target.DefaultRoute.Table != 254 {
+		t.Fatalf("policy table was selected as the main table: %+v", plan.Target.DefaultRoute)
+	}
+	for _, rule := range plan.RulesToAdd {
+		if rule.Source == netip.MustParsePrefix("198.51.100.10/32") {
+			t.Fatalf("manual source rule was duplicated: %+v", plan.RulesToAdd)
+		}
+	}
+	tx := transaction.Transaction{Backend: backend, Plan: plan}
+	if err = tx.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Verify(); err != nil {
+		t.Fatal(err)
+	}
+	route, err := backend.RouteTo(netip.MustParseAddr("1.1.1.1"), "")
+	if err != nil || route.Interface != secondary {
+		t.Fatalf("global route=%+v err=%v", route, err)
+	}
+	primarySourceRoute, err := exec.Command("ip", "route", "get", "1.1.1.1", "from", "192.0.2.10").CombinedOutput()
+	if err != nil || !strings.Contains(string(primarySourceRoute), "dev "+primary) {
+		t.Fatalf("primary source route=%q err=%v", primarySourceRoute, err)
+	}
+	if err = tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	route, err = backend.RouteTo(netip.MustParseAddr("1.1.1.1"), "")
+	if err != nil || route.Interface != primary {
+		t.Fatalf("restored route=%+v err=%v", route, err)
+	}
+}
