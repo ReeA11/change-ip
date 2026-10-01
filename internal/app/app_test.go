@@ -94,6 +94,58 @@ func TestResolveGatewayKeepsOutboundSource(t *testing.T) {
 	}
 }
 
+func TestResolveGatewayUsesSelectedSource(t *testing.T) {
+	f := &fakeBackend{state: appState()}
+	a := New(f, "/usr/local/sbin/change-ip")
+	p, err := a.ResolveGateway(Options{Interface: "eth0", Gateway: "192.0.2.254", Target: "192.0.2.20"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Target.OutboundSource != netip.MustParseAddr("192.0.2.20") || p.Target.DefaultRoute.Source != netip.MustParseAddr("192.0.2.20") {
+		t.Fatalf("gateway plan source = %s", p.Target.OutboundSource)
+	}
+}
+
+func TestResolveGatewayRejectsUnconfiguredSource(t *testing.T) {
+	f := &fakeBackend{state: appState()}
+	a := New(f, "/usr/local/sbin/change-ip")
+	if _, err := a.ResolveGateway(Options{Interface: "eth0", Gateway: "192.0.2.254", Target: "192.0.2.99"}); err == nil {
+		t.Fatal("expected unconfigured source error")
+	}
+}
+
+func TestResolveDifferentSubnetRequiresGateway(t *testing.T) {
+	f := &fakeBackend{state: appState()}
+	a := New(f, "/usr/local/sbin/change-ip")
+	if _, err := a.Resolve(Options{Target: "198.51.100.20/24", Interface: "eth0"}); err == nil || !strings.Contains(err.Error(), "no gateway is configured") {
+		t.Fatalf("expected gateway request, got %v", err)
+	}
+}
+
+func TestResolveDifferentSubnetAcceptsExplicitGateway(t *testing.T) {
+	f := &fakeBackend{state: appState()}
+	a := New(f, "/usr/local/sbin/change-ip")
+	p, err := a.Resolve(Options{Target: "198.51.100.20/24", Interface: "eth0", Gateway: "198.51.100.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Target.DefaultRoute.Gateway != netip.MustParseAddr("198.51.100.1") {
+		t.Fatalf("gateway = %s", p.Target.DefaultRoute.Gateway)
+	}
+}
+
+func TestResolveDifferentSubnetCanKeepCurrentGateway(t *testing.T) {
+	f := &fakeBackend{state: appState()}
+	a := New(f, "/usr/local/sbin/change-ip")
+	p, err := a.Resolve(Options{Target: "198.51.100.20/24", Interface: "eth0", Gateway: "192.0.2.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Target.DefaultRoute.Gateway != f.state.DefaultRoute.Gateway || p.Target.DefaultRoute.Source != netip.MustParseAddr("198.51.100.20") {
+		t.Fatalf("current gateway was not retained for the new source: %+v", p)
+	}
+}
+
 type multiBackend struct {
 	states map[string]network.State
 	routes []network.Route

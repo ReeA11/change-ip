@@ -142,6 +142,7 @@ func (a *Application) Resolve(o Options) (transaction.Plan, error) {
 			o.Gateway = profileEntry.Gateway.String()
 		}
 	}
+	gatewayProvided := strings.TrimSpace(o.Gateway) != ""
 	if prefixKnown && profileFound && profileEntry.Prefix.Bits() != target.Bits() {
 		return transaction.Plan{}, fmt.Errorf("requested /%d conflicts with profile /%d for %s", target.Bits(), profileEntry.Prefix.Bits(), target.Addr())
 	}
@@ -162,6 +163,13 @@ func (a *Application) Resolve(o Options) (transaction.Plan, error) {
 		}
 	}
 	gw := before.DefaultRoute.Gateway
+	requireGateway := false
+	if !gatewayProvided {
+		if current, ok := network.HasAddress(before, before.OutboundSource); ok && !sameSubnet(current.Prefix, target) {
+			gw = netip.Addr{}
+			requireGateway = true
+		}
+	}
 	active, defaultRoutes, e := a.activeDefaultRoute()
 	if e != nil {
 		return transaction.Plan{}, e
@@ -171,7 +179,7 @@ func (a *Application) Resolve(o Options) (transaction.Plan, error) {
 		if e != nil || !config.UsableIPv4(gw) {
 			return transaction.Plan{}, fmt.Errorf("invalid gateway %q", o.Gateway)
 		}
-	} else if !gw.IsValid() {
+	} else if !gw.IsValid() && !requireGateway {
 		if target.Bits() < 32 && target.Contains(active.Gateway) {
 			gw = active.Gateway
 		} else {
@@ -206,6 +214,10 @@ func (a *Application) Resolve(o Options) (transaction.Plan, error) {
 		return transaction.Plan{}, err
 	}
 	return plan, nil
+}
+
+func sameSubnet(a, b netip.Prefix) bool {
+	return a.Contains(b.Addr()) && b.Contains(a.Addr())
 }
 
 func (a *Application) ResolveAddAddresses(o Options) (transaction.Plan, error) {
@@ -262,11 +274,11 @@ func (a *Application) ResolveGateway(o Options) (transaction.Plan, error) {
 	if err != nil || !config.UsableIPv4(gateway) {
 		return transaction.Plan{}, fmt.Errorf("invalid gateway %q", o.Gateway)
 	}
-	address, ok := network.HasAddress(before, before.OutboundSource)
-	if !ok {
-		return transaction.Plan{}, fmt.Errorf("outbound source %s is not configured on %s", before.OutboundSource, iface)
+	address, err := preferredInterfaceAddress(before, strings.TrimSpace(o.Target))
+	if err != nil {
+		return transaction.Plan{}, err
 	}
-	plan, err := transaction.BuildPlan(before, address.Prefix, gateway)
+	plan, err := transaction.BuildPlan(before, address, gateway)
 	if err != nil {
 		return transaction.Plan{}, err
 	}
