@@ -141,6 +141,10 @@ func (u *UI) localizeError(err error) string {
 		return "Для нового IP нужен префикс сети из панели провайдера, например /24 или /32."
 	case strings.HasPrefix(message, "invalid gateway "):
 		return "Шлюз указан неверно. Скопируйте IPv4-шлюз из панели провайдера."
+	case strings.HasPrefix(message, "invalid or unusable IPv4") || strings.HasPrefix(message, "invalid IPv4 prefix"):
+		return "IPv4-адрес или префикс указан неверно. Используйте формат 192.0.2.10/24."
+	case strings.HasPrefix(message, "duplicate IPv4 address "):
+		return "Этот IPv4-адрес уже есть в списке."
 	case strings.Contains(message, " exists as /") && strings.Contains(message, ", not /"):
 		return "Этот IP уже настроен с другим префиксом. Используйте значение, выданное провайдером, или выберите IP из списка."
 	case strings.HasPrefix(message, "IP ") && strings.Contains(message, " is configured on more than one interface"):

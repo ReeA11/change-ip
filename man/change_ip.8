@@ -1,4 +1,4 @@
-.TH CHANGE-IP 8 "September 2026" "ChangeIP 3.2" "System Administration"
+.TH CHANGE-IP 8 "September 2026" "ChangeIP 3.2.1" "System Administration"
 .SH NAME
 change-ip \- make a provider-issued IPv4 the default outbound source
 .SH SYNOPSIS
@@ -36,6 +36,12 @@ switches between English and Russian and stores the choice in
 .IR /etc/change-ip/language .
 Set NO_COLOR to disable colors. Explicit commands remain plain text and are
 suitable for non-interactive SSH use and pipelines.
+.PP
+The interactive address editor validates entries before applying them and
+allows entries to be changed or removed. After an interactive outbound IP,
+gateway, or main-connection change, press Enter within 60 seconds to keep the
+new configuration. Otherwise ChangeIP restores the previous backup. Explicit
+CLI commands do not use this confirmation timer.
 .SH COMMANDS
 .TP
 .B status [INTERFACE]
@@ -60,6 +66,10 @@ Set the IPv4 gateway.
 .TP
 .BR --interface , " -i " IFACE
 Use an explicit validated interface.
+.TP
+.BI --source " IP"
+Bind the default route to this configured local IPv4 when changing the gateway
+or main interface.
 .TP
 .BR --prefix , " -p " N
 Set prefix length for an address without /N.

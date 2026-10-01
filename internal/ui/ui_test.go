@@ -2,8 +2,10 @@ package ui
 
 import (
 	"net/netip"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ReeA11/change-ip/internal/app"
 	"github.com/ReeA11/change-ip/internal/diagnostics"
@@ -49,6 +51,37 @@ func TestHomeShowsNetworkCIDRsAndPlainTextSelection(t *testing.T) {
 	}
 	if strings.Contains(got, "\x1b[") {
 		t.Fatalf("plain screen contains ANSI colors: %q", got)
+	}
+}
+
+func TestAddressListHeaderShowsEveryEnteredAddress(t *testing.T) {
+	u := &UI{version: "3.2.1", color: false}
+	got := u.addressListHeader([]string{"192.0.2.10/24", "198.51.100.20/32"})
+	for _, want := range []string{"1. 192.0.2.10/24  ✓", "2. 198.51.100.20/32  ✓"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("address editor does not contain %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestNetworkChangeConfirmationSupportsKeepAndTimeout(t *testing.T) {
+	out, err := os.CreateTemp(t.TempDir(), "terminal-output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	u := &UI{
+		term:    &terminal{out: out, keys: make(chan key, 1)},
+		version: "3.2.1",
+		resize:  make(chan os.Signal),
+		signals: make(chan os.Signal),
+	}
+	u.term.keys <- keyEnter
+	if !u.confirmNetworkChange(time.Second) {
+		t.Fatal("Enter did not keep the applied network change")
+	}
+	if u.confirmNetworkChange(time.Millisecond) {
+		t.Fatal("confirmation timeout did not request rollback")
 	}
 }
 

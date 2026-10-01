@@ -9,9 +9,11 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/ReeA11/change-ip/internal/app"
 	"github.com/ReeA11/change-ip/internal/backup"
+	"github.com/ReeA11/change-ip/internal/config"
 	"github.com/ReeA11/change-ip/internal/diagnostics"
 	"github.com/ReeA11/change-ip/internal/network"
 	"github.com/ReeA11/change-ip/internal/transaction"
@@ -134,8 +136,10 @@ func (u *UI) runOperation(plan transaction.Plan, o app.Options, operation uiOper
 	}
 	applySignals := make(chan os.Signal, 1)
 	applyDone := make(chan struct{})
+	listenerDone := make(chan struct{})
 	interrupted := make(chan struct{}, 1)
 	go func() {
+		defer close(listenerDone)
 		for {
 			select {
 			case k, ok := <-u.term.keys:
@@ -155,6 +159,7 @@ func (u *UI) runOperation(plan transaction.Plan, o app.Options, operation uiOper
 	}()
 	backupDir, err := operation(o, applySignals)
 	close(applyDone)
+	<-listenerDone
 	u.app.Out, u.app.Err = oldOut, oldErr
 	select {
 	case <-interrupted:
@@ -168,19 +173,55 @@ func (u *UI) runOperation(plan transaction.Plan, o app.Options, operation uiOper
 func (u *UI) addAddresses(s diagnostics.Status) error {
 	var addresses []string
 	for {
-		label := fmt.Sprintf(u.t("Address %d (IP/PREFIX, blank to finish)", "Адрес %d (IP/PREFIX, пусто — завершить)"), len(addresses)+1)
-		address, ok := u.input(u.t("Add IPv4 addresses", "Добавление IPv4-адресов"), label, "")
+		items := []string{u.t("Add address", "Добавить адрес")}
+		if len(addresses) > 0 {
+			items = append(items,
+				u.t("Edit address", "Изменить адрес"),
+				u.t("Delete address", "Удалить адрес"),
+				u.t("Continue", "Продолжить"),
+			)
+		}
+		items = append(items, u.t("Cancel", "Отмена"))
+		action, ok := u.choose(u.addressListHeader(addresses), items, u.t("↑↓ navigate   enter select   esc cancel", "↑↓ навигация   enter выбрать   esc отмена"))
 		if !ok {
 			return nil
 		}
-		if address == "" {
-			if len(addresses) == 0 {
+		if len(addresses) == 0 {
+			if action == 1 {
 				return nil
 			}
-			break
+			if address, accepted := u.editAddress(s.State.Interface, addresses, ""); accepted {
+				addresses = append(addresses, address)
+			}
+			continue
 		}
-		addresses = append(addresses, address)
+		switch action {
+		case 0:
+			if address, accepted := u.editAddress(s.State.Interface, addresses, ""); accepted {
+				addresses = append(addresses, address)
+			}
+		case 1:
+			selected, chosen := u.choose(u.addressListHeader(addresses), addresses, u.t("↑↓ navigate   enter edit   esc back", "↑↓ навигация   enter изменить   esc назад"))
+			if chosen {
+				others := append([]string(nil), addresses[:selected]...)
+				others = append(others, addresses[selected+1:]...)
+				if address, accepted := u.editAddress(s.State.Interface, others, addresses[selected]); accepted {
+					addresses[selected] = address
+				}
+			}
+		case 2:
+			selected, chosen := u.choose(u.t("Delete IPv4 address", "Удаление IPv4-адреса"), addresses, u.t("↑↓ navigate   enter delete   esc back", "↑↓ навигация   enter удалить   esc назад"))
+			if chosen {
+				addresses = append(addresses[:selected], addresses[selected+1:]...)
+			}
+		case 3:
+			goto review
+		default:
+			return nil
+		}
 	}
+
+review:
 	o := app.Options{Interface: s.State.Interface, Targets: addresses}
 	plan, err := u.app.ResolveAddAddresses(o)
 	if err != nil {
@@ -208,12 +249,75 @@ func (u *UI) addAddresses(s diagnostics.Status) error {
 	return nil
 }
 
+func (u *UI) addressListHeader(addresses []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n\n%s", u.title(), u.t("IPv4 addresses to add", "IPv4-адреса для добавления"))
+	if len(addresses) == 0 {
+		fmt.Fprintf(&b, "\n  %s", u.t("No addresses entered yet", "Адреса пока не введены"))
+	} else {
+		for i, address := range addresses {
+			fmt.Fprintf(&b, "\n  %d. %s  ✓", i+1, address)
+		}
+	}
+	return b.String()
+}
+
+func (u *UI) editAddress(iface string, existing []string, initial string) (string, bool) {
+	value := initial
+	for {
+		address, ok := u.input(u.addressListHeader(existing), u.t("Address (IP/PREFIX)", "Адрес (IP/PREFIX)"), value)
+		if !ok {
+			return "", false
+		}
+		candidate := append(append([]string(nil), existing...), address)
+		if _, err := u.app.ResolveAddAddresses(app.Options{Interface: iface, Targets: candidate}); err != nil {
+			u.message(u.t("Invalid address", "Неверный адрес"), u.localizeError(err), u.t("The entered value will be preserved for correction.", "Введённое значение сохранится для исправления."))
+			if u.quit {
+				return "", false
+			}
+			value = address
+			continue
+		}
+		return address, true
+	}
+}
+
 func (u *UI) changeGateway(s diagnostics.Status) error {
+	var addresses []network.Address
+	for _, address := range s.State.Addresses {
+		if config.UsableIPv4(address.Prefix.Addr()) && address.Prefix.Addr() == s.State.OutboundSource {
+			addresses = append(addresses, address)
+		}
+	}
+	for _, address := range s.State.Addresses {
+		if config.UsableIPv4(address.Prefix.Addr()) && address.Prefix.Addr() != s.State.OutboundSource {
+			addresses = append(addresses, address)
+		}
+	}
+	if len(addresses) == 0 {
+		return fmt.Errorf("no usable IPv4 address on %s", s.State.Interface)
+	}
+	items := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		label := address.Prefix.String()
+		if address.Prefix.Addr() == s.State.OutboundSource {
+			label += u.t("    current", "    текущий")
+		}
+		items = append(items, label)
+	}
+	selected, ok := u.choose(
+		u.title()+"\n\n"+u.t("Select the IPv4 to bind to the new gateway", "Выберите IPv4 для привязки к новому шлюзу"),
+		items,
+		u.t("↑↓ navigate   enter select   esc back", "↑↓ навигация   enter выбрать   esc назад"),
+	)
+	if !ok {
+		return nil
+	}
 	gateway, ok := u.input(u.t("Change gateway", "Изменение шлюза"), u.t("Gateway", "Шлюз"), s.State.DefaultRoute.Gateway.String())
 	if !ok {
 		return nil
 	}
-	o := app.Options{Interface: s.State.Interface, Gateway: gateway}
+	o := app.Options{Interface: s.State.Interface, Gateway: gateway, Target: addresses[selected].Prefix.Addr().String()}
 	plan, err := u.app.ResolveGateway(o)
 	if err != nil {
 		return err
@@ -221,11 +325,15 @@ func (u *UI) changeGateway(s diagnostics.Status) error {
 	if !u.review(plan) {
 		return nil
 	}
-	_, interrupted, err := u.runOperation(plan, o, u.app.ChangeGateway)
+	backupDir, interrupted, err := u.runOperation(plan, o, u.app.ChangeGateway)
 	if interrupted || err != nil {
 		return err
 	}
-	u.message("ChangeIP", u.t("✓ Gateway changed\n\nOutbound IP was not changed.", "✓ Шлюз изменён\n\nИсходящий IP не изменён."), "")
+	confirmed, err := u.confirmOrRollback(backupDir)
+	if err != nil || !confirmed {
+		return err
+	}
+	u.message("ChangeIP", fmt.Sprintf(u.t("✓ Gateway changed\n\nOutbound IP: %s", "✓ Шлюз изменён\n\nИсходящий IP: %s"), plan.Target.OutboundSource), "")
 	return nil
 }
 
@@ -285,8 +393,12 @@ func (u *UI) changeDefaultInterface() error {
 	if !u.review(plan) {
 		return nil
 	}
-	_, interrupted, err := u.runOperation(plan, o, u.app.ChangeDefaultInterface)
+	backupDir, interrupted, err := u.runOperation(plan, o, u.app.ChangeDefaultInterface)
 	if interrupted || err != nil {
+		return err
+	}
+	confirmed, err := u.confirmOrRollback(backupDir)
+	if err != nil || !confirmed {
 		return err
 	}
 	u.message("ChangeIP", fmt.Sprintf(u.t("✓ Main connection changed to %s", "✓ Основное подключение изменено на %s"), plan.Target.Interface), "")
@@ -323,6 +435,10 @@ func (u *UI) changeAddress(s diagnostics.Status) error {
 	}
 	var choices []addressChoice
 	var items []string
+	currentGateway := ""
+	if s.State.DefaultRoute.Gateway.IsValid() {
+		currentGateway = s.State.DefaultRoute.Gateway.String()
+	}
 	names, err := u.app.Net.Interfaces()
 	if err != nil {
 		return err
@@ -381,7 +497,7 @@ func (u *UI) changeAddress(s diagnostics.Status) error {
 			plan, err = u.app.Resolve(o)
 		}
 		if err != nil && strings.Contains(err.Error(), "no gateway is configured") {
-			gateway, gatewayOK := u.input(u.t("Add IPv4", "Добавление IPv4"), u.t("Provider gateway", "Шлюз от провайдера"), "")
+			gateway, gatewayOK := u.input(u.t("Add IPv4", "Добавление IPv4"), u.t("Provider gateway (confirm to keep current)", "Шлюз от провайдера (подтвердите, чтобы оставить текущий)"), currentGateway)
 			if !gatewayOK {
 				return nil
 			}
@@ -391,7 +507,7 @@ func (u *UI) changeAddress(s diagnostics.Status) error {
 		operation = u.app.Apply
 	}
 	if err != nil && strings.Contains(err.Error(), "no gateway is configured") {
-		gateway, accepted := u.input(u.t("Connection setup", "Настройка подключения"), u.t("Provider gateway", "Шлюз от провайдера"), "")
+		gateway, accepted := u.input(u.t("Connection setup", "Настройка подключения"), u.t("Provider gateway (confirm to keep current)", "Шлюз от провайдера (подтвердите, чтобы оставить текущий)"), currentGateway)
 		if !accepted {
 			return nil
 		}
@@ -415,6 +531,10 @@ func (u *UI) changeAddress(s diagnostics.Status) error {
 	if applyErr != nil {
 		return applyErr
 	}
+	confirmed, err := u.confirmOrRollback(backupDir)
+	if err != nil || !confirmed {
+		return err
+	}
 	fresh, err := u.app.Collect(plan.Target.Interface)
 	if err != nil {
 		return err
@@ -427,6 +547,72 @@ func (u *UI) changeAddress(s diagnostics.Status) error {
 	}
 	u.message("ChangeIP", body.String(), "")
 	return nil
+}
+
+const networkConfirmationTimeout = 60 * time.Second
+
+func (u *UI) confirmOrRollback(backupDir string) (bool, error) {
+	if backupDir == "" {
+		return true, nil
+	}
+	if u.confirmNetworkChange(networkConfirmationTimeout) {
+		return true, nil
+	}
+	u.term.draw(u.t("Restoring the previous network configuration...", "Восстановление предыдущей сетевой конфигурации..."))
+	if err := u.app.Rollback(backupDir); err != nil {
+		return false, fmt.Errorf("automatic rollback: %w", err)
+	}
+	if !u.quit {
+		u.message("ChangeIP", u.t("✓ Previous network configuration restored", "✓ Предыдущая сетевая конфигурация восстановлена"), "")
+	}
+	return false, nil
+}
+
+func (u *UI) confirmNetworkChange(timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	ticker := time.NewTicker(time.Second)
+	defer deadline.Stop()
+	defer ticker.Stop()
+	remaining := timeout
+	draw := func() {
+		seconds := int((remaining + time.Second - 1) / time.Second)
+		u.term.draw(fmt.Sprintf(
+			"%s\n\n%s\n\n%s\n\n%s",
+			u.title(),
+			u.t("✓ Network change applied", "✓ Сетевые изменения применены"),
+			fmt.Sprintf(u.t("Confirm that the server is reachable within %d seconds.", "Подтвердите доступность сервера в течение %d секунд."), seconds),
+			u.gray(u.t("Enter keep changes   esc rollback", "Enter сохранить   esc откатить")),
+		))
+	}
+	draw()
+	for {
+		select {
+		case k, ok := <-u.term.keys:
+			if !ok || k == keyInterrupt {
+				u.quit = true
+				return false
+			}
+			if k == keyEnter {
+				return true
+			}
+			if k == keyEscape {
+				return false
+			}
+		case <-ticker.C:
+			remaining -= time.Second
+			if remaining < 0 {
+				remaining = 0
+			}
+			draw()
+		case <-deadline.C:
+			return false
+		case <-u.resize:
+			draw()
+		case <-u.signals:
+			u.quit = true
+			return false
+		}
+	}
 }
 
 func (u *UI) review(p transaction.Plan) bool {

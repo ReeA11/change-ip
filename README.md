@@ -36,7 +36,7 @@ sudo change-ip update
 ```
 
 - `sudo change-ip add-address 176.96.136.247/25 176.96.136.248/25 --interface eth0` — add IPv4 addresses without changing the outbound IP.
-- `sudo change-ip set-gateway 176.96.136.129 --interface eth0` — change the gateway without changing the outbound IP.
+- `sudo change-ip set-gateway 176.96.136.129 --interface eth0 --source 176.96.136.246` — change the gateway and bind it to the selected local IP.
 - `sudo change-ip set-interface eth1` — make the interface the default for outbound traffic.
 
 When a provider assigns an address to a separate interface, that interface may
@@ -47,6 +47,13 @@ owns that IP. No manual routing tables or `ip rule` commands are required.
 
 The same IP must not be configured on two interfaces. ChangeIP detects this
 before applying a change and tells you which interface should be used.
+
+The interactive wizard validates every address while you build the list and
+lets you edit or remove entries before applying them. After a risky route,
+gateway, or outbound-IP change, the wizard waits 60 seconds for confirmation;
+otherwise it restores the backup automatically. Explicit CLI commands remain
+available for unattended or deliberately risky operations and do not wait for
+this interactive confirmation.
 
 Supported flags include `--prefix`, `--profile`, `--runtime-only`, `--yes`, `--check-egress`, `--verbose`, as well as the legacy CLI positional interface argument. A prefix is ​​mandatory for the new address; ChangeIP does not attempt to guess it. Profile format:
 
@@ -90,7 +97,7 @@ sudo change-ip update
 ```
 
 - `sudo change-ip add-address 176.96.136.247/25 176.96.136.248/25 --interface eth0` — добавить IPv4-адреса без смены исходящего IP.
-- `sudo change-ip set-gateway 176.96.136.129 --interface eth0` — изменить шлюз без смены исходящего IP.
+- `sudo change-ip set-gateway 176.96.136.129 --interface eth0 --source 176.96.136.246` — изменить шлюз и привязать его к выбранному локальному IP.
 - `sudo change-ip set-interface eth1` — сделать интерфейс основным для исходящего трафика.
 
 Если провайдер выдал адрес на отдельном интерфейсе, у этого интерфейса ещё может
@@ -103,6 +110,13 @@ sudo change-ip update
 Один IP нельзя одновременно добавлять на несколько интерфейсов. ChangeIP
 обнаружит такой конфликт до применения изменений и подскажет, какой интерфейс
 нужно выбрать.
+
+Интерактивный режим проверяет каждый адрес при вводе и позволяет изменить или
+удалить элементы списка до применения. После рискованной смены маршрута, шлюза
+или исходящего IP программа ждёт подтверждение 60 секунд, иначе автоматически
+восстанавливает резервную копию. Явные CLI-команды по-прежнему позволяют
+выполнять автоматические или намеренно рискованные операции без интерактивного
+ожидания.
 
 Поддерживаются `--prefix`, `--profile`, `--runtime-only`, `--yes`, `--check-egress`, `--verbose` и positional interface старого CLI. Для нового адреса prefix обязателен: ChangeIP его не угадывает. Формат profile:
 
