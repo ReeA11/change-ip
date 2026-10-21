@@ -182,5 +182,6 @@ if [ -z "$MAN_FILE" ] && [ -f "$root/man/change_ip.8" ]; then MAN_FILE="$root/ma
 if [ -n "$MAN_FILE" ] && [ -f "$MAN_FILE" ]; then install -m 0644 "$MAN_FILE" "$PREFIX/share/man/man8/change-ip.8"; fi
 
 "$canonical" --version >/dev/null
+if [ "$PREFIX" = /usr/local ]; then "$canonical" migrate-persistence; fi
 log "$(message 'Command: change-ip' 'Команда: change-ip')"
 log "$(message 'Network was not changed. Run: sudo change-ip' 'Сеть не изменялась. Запустите: sudo change-ip')"

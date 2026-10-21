@@ -1,4 +1,4 @@
-.TH CHANGE-IP 8 "September 2026" "ChangeIP 3.2.1" "System Administration"
+.TH CHANGE-IP 8 "October 2026" "ChangeIP 3.2.2" "System Administration"
 .SH NAME
 change-ip \- make a provider-issued IPv4 the default outbound source
 .SH SYNOPSIS
@@ -23,9 +23,17 @@ explicit gateway. Per-address source rules keep replies on the interface that
 owns each address. Duplicate addresses on different interfaces are rejected
 before mutation.
 .PP
-Persistence is a generated systemd oneshot invoking ChangeIP after
-network-online.target. It does not replace cloud-init, Netplan, NetworkManager,
+Persistence is a generated systemd oneshot invoking ChangeIP after the active
+network manager has configured the target interface. The unit follows restarts
+of systemd-networkd, NetworkManager, or ifupdown networking and reapplies the
+saved state. It does not replace cloud-init, Netplan, NetworkManager,
 systemd-networkd, or ifupdown configuration.
+.PP
+The installer migrates existing version 1 profiles. When the built-in updater
+is invoked from ChangeIP 3.2.1 or older, run
+.B sudo change-ip migrate-persistence
+once after the update; the old process cannot run migration code from the newly
+installed binary.
 .PP
 With no arguments on a TTY, ChangeIP starts an inline interactive CLI. It uses
 temporary raw input and ANSI updates, without an alternate-screen UI framework.
