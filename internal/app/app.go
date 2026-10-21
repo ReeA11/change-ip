@@ -417,7 +417,7 @@ func restoreUnitState(unitPath string, wasEnabled bool) error {
 	}
 	action := "disable"
 	if wasEnabled {
-		action = "enable"
+		action = "reenable"
 	}
 	cmd := exec.Command("systemctl", action, filepath.Base(unitPath))
 	if err := cmd.Run(); err != nil && wasEnabled {

@@ -14,13 +14,14 @@ import (
 
 	"github.com/ReeA11/change-ip/internal/app"
 	"github.com/ReeA11/change-ip/internal/network"
+	"github.com/ReeA11/change-ip/internal/persist"
 	"github.com/ReeA11/change-ip/internal/platform"
 	"github.com/ReeA11/change-ip/internal/ui"
 	"github.com/ReeA11/change-ip/internal/updater"
 )
 
 // Release builds override this value from the Git tag with -ldflags.
-var version = "3.2.1-dev"
+var version = "3.2.2-dev"
 
 func usage() {
 	fmt.Printf(`change-ip %s — make a provider-assigned IPv4 the outbound source
@@ -292,8 +293,10 @@ func main() {
 		}()
 		u := updater.New(updater.Config{CurrentVersion: version, Out: os.Stdout})
 		runErr = withLock(func() error {
-			_, updateErr := u.Run(ctx)
-			return updateErr
+			if _, updateErr := u.Run(ctx); updateErr != nil {
+				return updateErr
+			}
+			return persist.NewSystemd("/usr/local/bin/change-ip").Migrate()
 		})
 		close(done)
 		cancel()
@@ -351,6 +354,16 @@ func main() {
 			break
 		}
 		runErr = withLock(func() error { return a.ApplyProfile(filepath.Clean(path)) })
+	case "migrate-persistence":
+		if len(args) != 1 {
+			runErr = fmt.Errorf("migrate-persistence does not accept arguments")
+			break
+		}
+		if os.Geteuid() != 0 {
+			runErr = fmt.Errorf("run as root")
+			break
+		}
+		runErr = withLock(func() error { return persist.NewSystemd(self).Migrate() })
 	case "add-address":
 		o, addresses, parseErr := parseOperation(args[1:])
 		if parseErr != nil {

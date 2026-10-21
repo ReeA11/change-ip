@@ -48,6 +48,10 @@ owns that IP. No manual routing tables or `ip rule` commands are required.
 The same IP must not be configured on two interfaces. ChangeIP detects this
 before applying a change and tells you which interface should be used.
 
+Saved addresses and routes are reapplied after reboot and after the network
+manager responsible for the interface restarts. Existing version 1 profiles
+are migrated during install or update without changing their desired state.
+
 The interactive wizard validates every address while you build the list and
 lets you edit or remove entries before applying them. After a risky route,
 gateway, or outbound-IP change, the wizard waits 60 seconds for confirmation;
@@ -110,6 +114,10 @@ sudo change-ip update
 Один IP нельзя одновременно добавлять на несколько интерфейсов. ChangeIP
 обнаружит такой конфликт до применения изменений и подскажет, какой интерфейс
 нужно выбрать.
+
+Сохранённые адреса и маршруты повторно применяются после перезагрузки и после
+перезапуска сетевого менеджера, управляющего интерфейсом. Существующие профили
+версии 1 мигрируют при установке или обновлении без изменения desired state.
 
 Интерактивный режим проверяет каждый адрес при вводе и позволяет изменить или
 удалить элементы списка до применения. После рискованной смены маршрута, шлюза

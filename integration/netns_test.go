@@ -87,7 +87,8 @@ func TestNetNSHelper(t *testing.T) {
 		target = netip.MustParsePrefix("198.51.100.20/32")
 		gw = netip.MustParseAddr("203.0.113.1")
 	}
-	p, e := transaction.BuildPlan(before, target, gw)
+	application := app.New(b, "/usr/local/bin/change-ip")
+	p, e := application.Resolve(app.Options{Target: target.String(), Gateway: gw.String(), Interface: iface})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -107,7 +108,7 @@ func TestNetNSHelper(t *testing.T) {
 	}
 	// Repeated apply must be harmless and must not claim ownership of an
 	// address created by the first transaction.
-	repeatPlan, e := transaction.BuildPlan(after, target, gw)
+	repeatPlan, e := application.Resolve(app.Options{Target: target.String(), Gateway: gw.String(), Interface: iface})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -168,6 +169,21 @@ func TestNetNSHelper(t *testing.T) {
 	}
 	if e = bootApp.ApplyDesiredState(bootState, p.Target); e != nil {
 		t.Fatal(e)
+	}
+	if len(p.Target.ManagedRules) > 0 {
+		rules, rulesErr := b.Rules()
+		if rulesErr != nil {
+			t.Fatal(rulesErr)
+		}
+		for _, wanted := range p.Target.ManagedRules {
+			found := false
+			for _, rule := range rules {
+				found = found || rule == wanted
+			}
+			if !found {
+				t.Fatalf("managed rule was not restored after reset: %+v", wanted)
+			}
+		}
 	}
 }
 
