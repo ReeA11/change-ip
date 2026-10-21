@@ -88,6 +88,29 @@ func TestWriteFollowsOwningNetworkManager(t *testing.T) {
 	}
 }
 
+func TestManagerForInterfaceDetectsInactiveIfupdownOwner(t *testing.T) {
+	bin := t.TempDir()
+	commands := map[string]string{
+		"systemctl": `#!/bin/sh
+if [ "$1" = show ]; then echo loaded; exit 0; fi
+exit 3
+`,
+		"ifquery": "#!/bin/sh\nprintf 'lo\\neth0\\n'\n",
+	}
+	for name, body := range commands {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	if got := managerForInterface("eth0"); got != "networking.service" {
+		t.Fatalf("manager=%q, want networking.service", got)
+	}
+	if got := managerForInterface("eth1"); got != "" {
+		t.Fatalf("unconfigured interface manager=%q", got)
+	}
+}
+
 func TestMigrateRewritesProfilesAndPreservesDisabledUnits(t *testing.T) {
 	root := t.TempDir()
 	configDir, unitDir := filepath.Join(root, "lib"), filepath.Join(root, "units")
@@ -163,6 +186,46 @@ func TestMigrateRejectsInvalidProfileBeforeReplacingUnit(t *testing.T) {
 	}
 }
 
+func TestMigrateSnapshotsAllUnitsBeforeReplacingAny(t *testing.T) {
+	root := t.TempDir()
+	configDir, unitDir := filepath.Join(root, "lib"), filepath.Join(root, "units")
+	old := &Systemd{BinaryPath: "/old/change-ip", ConfigDir: configDir, UnitDir: unitDir, Run: func(string, ...string) error { return nil }}
+	for _, iface := range []string{"eth0", "eth1"} {
+		if _, _, err := old.Write(network.State{Interface: iface}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := filepath.Join(unitDir, "change-ip-eth0.service")
+	before, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wants := filepath.Join(unitDir, "manual.target.wants")
+	if err = os.MkdirAll(wants, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(wants, filepath.Base(first))
+	if err = os.Symlink("../change-ip-eth0.service", link); err != nil {
+		t.Fatal(err)
+	}
+	second := filepath.Join(unitDir, "change-ip-eth1.service")
+	if err = os.Remove(second); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Mkdir(second, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := &Systemd{BinaryPath: "/usr/local/bin/change-ip", ConfigDir: configDir, UnitDir: unitDir, Run: func(string, ...string) error { return nil }}
+	if err = s.Migrate(); err == nil {
+		t.Fatal("migration succeeded despite unreadable second unit")
+	}
+	after, readErr := os.ReadFile(first)
+	target, linkErr := os.Readlink(link)
+	if readErr != nil || string(after) != string(before) || linkErr != nil || target != "../change-ip-eth0.service" {
+		t.Fatalf("first unit changed during preflight failure: read=%v link=%v target=%q", readErr, linkErr, target)
+	}
+}
+
 func TestMigrateRestoresUnitWhenEnableFails(t *testing.T) {
 	root := t.TempDir()
 	configDir, unitDir := filepath.Join(root, "lib"), filepath.Join(root, "units")
@@ -175,6 +238,18 @@ func TestMigrateRestoresUnitWhenEnableFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	links := []string{
+		filepath.Join(unitDir, "multi-user.target.wants", filepath.Base(unit)),
+		filepath.Join(unitDir, "systemd-networkd.service.wants", filepath.Base(unit)),
+	}
+	for _, link := range links {
+		if err = os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.Symlink("../"+filepath.Base(unit), link); err != nil {
+			t.Fatal(err)
+		}
+	}
 	s := &Systemd{
 		BinaryPath: "/usr/local/bin/change-ip",
 		ConfigDir:  configDir,
@@ -185,6 +260,9 @@ func TestMigrateRestoresUnitWhenEnableFails(t *testing.T) {
 		IsEnabled: func(string) bool { return true },
 		Run: func(_ string, args ...string) error {
 			if len(args) > 0 && args[0] == "reenable" {
+				for _, link := range links {
+					_ = os.Remove(link)
+				}
 				return errors.New("enable failed")
 			}
 			return nil
@@ -196,6 +274,11 @@ func TestMigrateRestoresUnitWhenEnableFails(t *testing.T) {
 	after, readErr := os.ReadFile(unit)
 	if readErr != nil || string(after) != string(before) {
 		t.Fatalf("unit was not restored: %v\n%s", readErr, after)
+	}
+	for _, link := range links {
+		if target, linkErr := os.Readlink(link); linkErr != nil || target != "../"+filepath.Base(unit) {
+			t.Errorf("link %s was not restored: target=%q err=%v", link, target, linkErr)
+		}
 	}
 }
 func TestRejectUnsafeInterface(t *testing.T) {

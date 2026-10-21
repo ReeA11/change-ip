@@ -49,8 +49,10 @@ The same IP must not be configured on two interfaces. ChangeIP detects this
 before applying a change and tells you which interface should be used.
 
 Saved addresses and routes are reapplied after reboot and after the network
-manager responsible for the interface restarts. Existing version 1 profiles
-are migrated during install or update without changing their desired state.
+manager responsible for the interface restarts. The installer migrates existing
+version 1 profiles without changing their desired state. After using the built-in
+updater from version 3.2.1 or older, run `sudo change-ip migrate-persistence` once;
+the old updater process cannot execute migration code from the new binary.
 
 The interactive wizard validates every address while you build the list and
 lets you edit or remove entries before applying them. After a risky route,
@@ -116,8 +118,11 @@ sudo change-ip update
 нужно выбрать.
 
 Сохранённые адреса и маршруты повторно применяются после перезагрузки и после
-перезапуска сетевого менеджера, управляющего интерфейсом. Существующие профили
-версии 1 мигрируют при установке или обновлении без изменения desired state.
+перезапуска сетевого менеджера, управляющего интерфейсом. Установщик мигрирует
+существующие профили версии 1 без изменения desired state. После встроенного
+обновления с версии 3.2.1 или старше один раз выполните
+`sudo change-ip migrate-persistence`: старый процесс обновления не может вызвать
+код миграции из нового бинарника.
 
 Интерактивный режим проверяет каждый адрес при вводе и позволяет изменить или
 удалить элементы списка до применения. После рискованной смены маршрута, шлюза

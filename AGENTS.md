@@ -416,8 +416,10 @@ Unit получает `PartOf` и `WantedBy` только для менедже�
 интерфейсом: `systemd-networkd`, NetworkManager или ifupdown
 `networking.service`. Для networkd и NetworkManager перед apply выполняется
 interface-aware ожидание готовности. Поэтому сохранённое состояние повторно
-применяется после restart менеджера. Install и update мигрируют существующие
-JSON version 1 без изменения desired state и не включают ранее disabled units.
+применяется после restart менеджера. Installer мигрирует существующие JSON
+version 1 без изменения desired state и не включает ранее disabled units. После
+встроенного update из версии 3.2.1 или старше нужно один раз явно запустить
+`change-ip migrate-persistence`: старый процесс не исполняет код нового binary.
 
 `apply-profile` принимает только очищенный путь вида
 `/usr/local/lib/change-ip/apply-*.json`. До 30 секунд он ждёт появления target

@@ -39,23 +39,14 @@ func unitEnabled(name string) bool {
 }
 
 func managerForInterface(iface string) string {
-	var active []string
-	for _, service := range []string{"systemd-networkd.service", "NetworkManager.service", "networking.service"} {
-		if unitActive(service) {
-			active = append(active, service)
-		}
-	}
-	if len(active) == 1 {
-		return active[0]
-	}
-	if slices.Contains(active, "systemd-networkd.service") {
+	if unitActive("systemd-networkd.service") {
 		cmd := exec.Command("networkctl", "status", "--no-pager", iface)
 		cmd.Env = append(os.Environ(), "LC_ALL=C")
 		if output, err := cmd.CombinedOutput(); err == nil && !strings.Contains(strings.ToLower(string(output)), "unmanaged") {
 			return "systemd-networkd.service"
 		}
 	}
-	if slices.Contains(active, "NetworkManager.service") {
+	if unitActive("NetworkManager.service") {
 		cmd := exec.Command("nmcli", "-g", "GENERAL.STATE", "device", "show", iface)
 		cmd.Env = append(os.Environ(), "LC_ALL=C")
 		if output, err := cmd.Output(); err == nil {
@@ -63,6 +54,13 @@ func managerForInterface(iface string) string {
 			if state != "10" {
 				return "NetworkManager.service"
 			}
+		}
+	}
+	loadState, err := exec.Command("systemctl", "show", "--property=LoadState", "--value", "networking.service").Output()
+	if err == nil && strings.TrimSpace(string(loadState)) == "loaded" {
+		output, queryErr := exec.Command("ifquery", "--list").Output()
+		if queryErr == nil && slices.Contains(strings.Fields(string(output)), iface) {
+			return "networking.service"
 		}
 	}
 	return ""
@@ -186,9 +184,21 @@ func (s *Systemd) Migrate() error {
 		data    []byte
 		mode    os.FileMode
 		existed bool
+		links   map[string]string
 	}
 	var saved []savedUnit
 	var enabled []string
+	unitLinks := func(unit string) ([]string, error) {
+		var links []string
+		for _, pattern := range []string{"*.wants", "*.requires"} {
+			matches, globErr := filepath.Glob(filepath.Join(s.UnitDir, pattern, filepath.Base(unit)))
+			if globErr != nil {
+				return nil, globErr
+			}
+			links = append(links, matches...)
+		}
+		return links, nil
+	}
 	restore := func() {
 		for i := len(saved) - 1; i >= 0; i-- {
 			if saved[i].existed {
@@ -196,19 +206,24 @@ func (s *Systemd) Migrate() error {
 			} else {
 				_ = os.Remove(saved[i].path)
 			}
+			links, _ := unitLinks(saved[i].path)
+			for _, link := range links {
+				_ = os.Remove(link)
+			}
+			for link, target := range saved[i].links {
+				_ = os.MkdirAll(filepath.Dir(link), 0755)
+				_ = os.Symlink(target, link)
+			}
 		}
 		_ = s.Run("systemctl", "daemon-reload")
-		for _, unit := range enabled {
-			_ = s.Run("systemctl", "reenable", unit)
-		}
 	}
-	for i, config := range profiles {
-		path := configs[i]
+	// Snapshot every unit and enablement link before changing the first one.
+	for _, config := range profiles {
 		_, unit, pathErr := s.Paths(config.State.Interface)
 		if pathErr != nil {
 			return pathErr
 		}
-		snapshot := savedUnit{path: unit}
+		snapshot := savedUnit{path: unit, links: map[string]string{}}
 		if snapshot.data, err = os.ReadFile(unit); err == nil {
 			info, statErr := os.Stat(unit)
 			if statErr != nil {
@@ -218,13 +233,28 @@ func (s *Systemd) Migrate() error {
 		} else if !os.IsNotExist(err) {
 			return err
 		}
+		links, linkErr := unitLinks(unit)
+		if linkErr != nil {
+			return linkErr
+		}
+		for _, link := range links {
+			target, readErr := os.Readlink(link)
+			if readErr != nil {
+				return readErr
+			}
+			snapshot.links[link] = target
+		}
 		saved = append(saved, snapshot)
+		if s.IsEnabled != nil && s.IsEnabled(filepath.Base(unit)) {
+			enabled = append(enabled, filepath.Base(unit))
+		}
+	}
+	for i, config := range profiles {
+		path := configs[i]
+		_, unit, _ := s.Paths(config.State.Interface)
 		if writeErr := s.writeUnit(config.State, path, unit); writeErr != nil {
 			restore()
 			return writeErr
-		}
-		if s.IsEnabled != nil && s.IsEnabled(filepath.Base(unit)) {
-			enabled = append(enabled, filepath.Base(unit))
 		}
 	}
 	if len(configs) == 0 {
