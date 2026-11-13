@@ -520,6 +520,9 @@ func (a *Application) applyPlan(o Options, p transaction.Plan, signals <-chan os
 		if e != nil {
 			return "", e
 		}
+		if e = protectSavedAddresses(cfg, p.Target); e != nil {
+			return "", e
+		}
 		f1, e := backup.Capture(cfg)
 		if e != nil {
 			return "", e
@@ -636,6 +639,34 @@ func (a *Application) applyPlan(o Options, p transaction.Plan, signals <-chan os
 		fmt.Fprintf(a.Out, "Backup: %s\n", backupDir)
 	}
 	return backupDir, nil
+}
+
+func protectSavedAddresses(path string, target network.State) error {
+	saved, err := persist.Load(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read saved state before replacing it: %w", err)
+	}
+	present := make(map[netip.Prefix]bool, len(target.Addresses))
+	for _, address := range target.Addresses {
+		present[address.Prefix] = true
+	}
+	var missing []string
+	for _, address := range saved.State.Addresses {
+		if address.Dynamic && address.Prefix.Addr() != saved.State.OutboundSource {
+			continue
+		}
+		if !present[address.Prefix] {
+			missing = append(missing, address.Prefix.String())
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return fmt.Errorf("refusing to replace saved state while persisted addresses are missing from runtime: %s; restore the saved profile first", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 func (a *Application) checkEgress(source netip.Addr, iface string) {

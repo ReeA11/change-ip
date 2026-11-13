@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [master]
+    branches: [master, 'fix/**']
   pull_request:
 jobs:
   test:
@@ -13,7 +13,7 @@ jobs:
       - name: gofmt
         run: test -z "$(find cmd internal integration -name '*.go' -print0 | xargs -0 gofmt -l)"
       - name: Shell syntax
-        run: sh -n install.sh install-ru.sh install-en.sh update.sh tests/install_test.sh
+        run: sh -n install.sh install-ru.sh install-en.sh update.sh tests/install_test.sh tests/systemd_lifecycle_test.sh
       - run: CGO_ENABLED=0 go vet ./...
       - run: CGO_ENABLED=0 go test ./...
       - name: Static cross-builds
@@ -39,3 +39,5 @@ jobs:
         run: CGO_ENABLED=0 go test -c -tags=integration -o /tmp/change-ip-integration.test ./integration
       - name: Disposable namespace integration tests
         run: sudo unshare --mount --net bash -c 'mount -t tmpfs tmpfs /run && mkdir -p /run/netns && exec /tmp/change-ip-integration.test -test.count=1 -test.v -test.run TestNetworkNamespaceTransactions'
+      - name: Generated unit systemd lifecycle
+        run: sudo env PATH="$PATH" ./tests/systemd_lifecycle_test.sh

@@ -21,7 +21,7 @@ import (
 )
 
 // Release builds override this value from the Git tag with -ldflags.
-var version = "3.2.2-dev"
+var version = "3.2.3-dev"
 
 func usage() {
 	fmt.Printf(`change-ip %s — make a provider-assigned IPv4 the outbound source
@@ -296,7 +296,7 @@ func main() {
 			if _, updateErr := u.Run(ctx); updateErr != nil {
 				return updateErr
 			}
-			return persist.NewSystemd("/usr/local/bin/change-ip").Migrate()
+			return runUpdatedMigration("/usr/local/bin/change-ip")
 		})
 		close(done)
 		cancel()
@@ -363,7 +363,11 @@ func main() {
 			runErr = fmt.Errorf("run as root")
 			break
 		}
-		runErr = withLock(func() error { return persist.NewSystemd(self).Migrate() })
+		if os.Getenv("CHANGE_IP_LOCK_HELD") == "1" {
+			runErr = persist.NewSystemd(self).Migrate()
+		} else {
+			runErr = withLock(func() error { return persist.NewSystemd(self).Migrate() })
+		}
 	case "add-address":
 		o, addresses, parseErr := parseOperation(args[1:])
 		if parseErr != nil {
@@ -449,4 +453,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[ERROR] %v\n", runErr)
 		os.Exit(1)
 	}
+}
+
+func runUpdatedMigration(binary string) error {
+	cmd := exec.Command(binary, "migrate-persistence")
+	cmd.Env = append(os.Environ(), "CHANGE_IP_LOCK_HELD=1")
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("updated binary installed, but persistence migration failed: %w", err)
+	}
+	return nil
 }
