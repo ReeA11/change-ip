@@ -77,6 +77,7 @@ restore_after_manager_start() {
   rm -f "$ready"
   (sleep 1; touch "$ready") &
   "$@"
+  systemctl is-active --quiet --wait "$unit"
   cmp "$desired" "$runtime"
 }
 
