@@ -7,11 +7,18 @@ unit=change-ip-ci-u39.service
 manager=change-ip-test-manager.service
 
 cleanup() {
+	status=$?
+	if [ "$status" -ne 0 ]; then
+		systemctl status "$manager" "$unit" --no-pager || true
+		journalctl -u "$manager" -u "$unit" --no-pager -n 80 || true
+		ls -la "$tmp" || true
+	fi
   systemctl stop "$manager" "$unit" >/dev/null 2>&1 || true
   rm -f "/run/systemd/system/$unit" "/run/systemd/system/$manager" "/run/systemd/system/$manager.wants/$unit"
   rmdir "/run/systemd/system/$manager.wants" 2>/dev/null || true
   systemctl daemon-reload >/dev/null 2>&1 || true
   rm -rf -- "$tmp"
+	exit "$status"
 }
 trap cleanup EXIT HUP INT TERM
 
