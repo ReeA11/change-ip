@@ -77,7 +77,12 @@ restore_after_manager_start() {
   rm -f "$ready"
   (sleep 1; touch "$ready") &
   "$@"
-  systemctl is-active --quiet --wait "$unit"
+  i=0
+  while [ "$(systemctl show -p ActiveState --value "$unit")" != active ]; do
+    i=$((i + 1))
+    test "$i" -lt 100
+    sleep 0.05
+  done
   cmp "$desired" "$runtime"
 }
 
