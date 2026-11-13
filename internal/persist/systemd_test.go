@@ -88,6 +88,27 @@ func TestWriteFollowsOwningNetworkManager(t *testing.T) {
 	}
 }
 
+func TestWriteLifecycleFixture(t *testing.T) {
+	root := os.Getenv("CHANGE_IP_SYSTEMD_FIXTURE")
+	if root == "" {
+		t.Skip("fixture generation is used by the isolated systemd lifecycle test")
+	}
+	binary := os.Getenv("CHANGE_IP_SYSTEMD_FIXTURE_BINARY")
+	if binary == "" {
+		t.Fatal("CHANGE_IP_SYSTEMD_FIXTURE_BINARY is required")
+	}
+	s := &Systemd{
+		BinaryPath: binary,
+		ConfigDir:  filepath.Join(root, "config"),
+		UnitDir:    filepath.Join(root, "units"),
+		Run:        func(string, ...string) error { return nil },
+		ManagerFor: func(string) string { return "systemd-networkd.service" },
+	}
+	if _, _, err := s.Write(network.State{Interface: "ci-u39"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestManagerForInterfaceDetectsInactiveIfupdownOwner(t *testing.T) {
 	bin := t.TempDir()
 	commands := map[string]string{

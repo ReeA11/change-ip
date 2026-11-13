@@ -1,4 +1,4 @@
-.TH CHANGE-IP 8 "October 2026" "ChangeIP 3.2.2" "System Administration"
+.TH CHANGE-IP 8 "November 2026" "ChangeIP 3.2.3" "System Administration"
 .SH NAME
 change-ip \- make a provider-issued IPv4 the default outbound source
 .SH SYNOPSIS
@@ -29,11 +29,13 @@ of systemd-networkd, NetworkManager, or ifupdown networking and reapplies the
 saved state. It does not replace cloud-init, Netplan, NetworkManager,
 systemd-networkd, or ifupdown configuration.
 .PP
-The installer migrates existing version 1 profiles. When the built-in updater
-is invoked from ChangeIP 3.2.1 or older, run
+The installer migrates existing version 1 profiles. The built-in updater runs
+migration through the newly installed binary. When upgrading from ChangeIP
+3.2.1 or older, use update.sh or run
 .B sudo change-ip migrate-persistence
-once after the update; the old process cannot run migration code from the newly
-installed binary.
+once after the update; those older processes cannot invoke the new migration
+code. ChangeIP refuses to overwrite a saved pool when persisted static addresses
+are absent from runtime state; restore the saved profile first.
 .PP
 With no arguments on a TTY, ChangeIP starts an inline interactive CLI. It uses
 temporary raw input and ANSI updates, without an alternate-screen UI framework.

@@ -50,9 +50,14 @@ before applying a change and tells you which interface should be used.
 
 Saved addresses and routes are reapplied after reboot and after the network
 manager responsible for the interface restarts. The installer migrates existing
-version 1 profiles without changing their desired state. After using the built-in
-updater from version 3.2.1 or older, run `sudo change-ip migrate-persistence` once;
-the old updater process cannot execute migration code from the new binary.
+version 1 profiles without changing their desired state. The built-in updater now
+runs migration through the newly installed binary. When upgrading from 3.2.1 or
+older, use `update.sh` or run `sudo change-ip migrate-persistence` once afterward,
+because those older updater processes cannot invoke the new migration code.
+
+If runtime addresses are missing while the saved profile still contains them,
+ChangeIP refuses to overwrite the complete saved pool. Restore the profile first;
+this prevents a temporary network-manager reset from becoming permanent state.
 
 The interactive wizard validates every address while you build the list and
 lets you edit or remove entries before applying them. After a risky route,
@@ -119,10 +124,14 @@ sudo change-ip update
 
 Сохранённые адреса и маршруты повторно применяются после перезагрузки и после
 перезапуска сетевого менеджера, управляющего интерфейсом. Установщик мигрирует
-существующие профили версии 1 без изменения desired state. После встроенного
-обновления с версии 3.2.1 или старше один раз выполните
-`sudo change-ip migrate-persistence`: старый процесс обновления не может вызвать
-код миграции из нового бинарника.
+существующие профили версии 1 без изменения desired state. Встроенный updater
+теперь запускает миграцию через уже установленный новый бинарник. При обновлении
+с версии 3.2.1 или старше используйте `update.sh` либо затем один раз выполните
+`sudo change-ip migrate-persistence`: старый updater не умеет вызвать новый код.
+
+Если часть runtime-адресов исчезла, но осталась в сохранённом профиле, ChangeIP
+откажется перезаписывать полный пул укороченным состоянием. Сначала восстановите
+сохранённый профиль — временный reset сетевого менеджера не станет постоянным.
 
 Интерактивный режим проверяет каждый адрес при вводе и позволяет изменить или
 удалить элементы списка до применения. После рискованной смены маршрута, шлюза

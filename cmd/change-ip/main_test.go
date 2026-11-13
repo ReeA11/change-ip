@@ -1,7 +1,10 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +15,23 @@ func TestParseCompatibility(t *testing.T) {
 	}
 	if !o.DryRun || o.Target != "192.0.2.20/24" || o.Gateway != "192.0.2.1" || o.Interface != "eth0" {
 		t.Fatalf("%+v", o)
+	}
+}
+
+func TestRunUpdatedMigrationExecutesInstalledBinary(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "called")
+	binary := filepath.Join(dir, "change-ip")
+	script := "#!/bin/sh\nprintf '%s:%s' \"$CHANGE_IP_LOCK_HELD\" \"$1\" > \"" + marker + "\"\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runUpdatedMigration(binary); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil || strings.TrimSpace(string(data)) != "1:migrate-persistence" {
+		t.Fatalf("updated binary was not used: %q, %v", data, err)
 	}
 }
 func TestParseLegacyPositionalInterface(t *testing.T) {

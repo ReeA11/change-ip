@@ -1,6 +1,8 @@
 package app
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -9,11 +11,15 @@ import (
 	"testing"
 
 	"github.com/ReeA11/change-ip/internal/network"
+	"github.com/ReeA11/change-ip/internal/persist"
 )
 
 type fakeBackend struct {
 	state     network.State
 	mutations int
+	added     []netip.Prefix
+	routes    []network.Route
+	rules     []network.Rule
 }
 
 func (f *fakeBackend) Interfaces() ([]string, error) { return []string{f.state.Interface}, nil }
@@ -24,13 +30,25 @@ func (f *fakeBackend) Snapshot(string) (network.State, error) { return f.state, 
 func (f *fakeBackend) RouteTo(_ netip.Addr, iface string) (network.RouteResult, error) {
 	return network.RouteResult{Interface: f.state.Interface, Source: f.state.OutboundSource, Gateway: f.state.DefaultRoute.Gateway, Table: f.state.DefaultRoute.Table}, nil
 }
-func (f *fakeBackend) AddAddress(string, netip.Prefix) error    { f.mutations++; return nil }
+func (f *fakeBackend) AddAddress(_ string, prefix netip.Prefix) error {
+	f.mutations++
+	f.added = append(f.added, prefix)
+	return nil
+}
 func (f *fakeBackend) DeleteAddress(string, netip.Prefix) error { f.mutations++; return nil }
-func (f *fakeBackend) ReplaceRoute(network.Route) error         { f.mutations++; return nil }
-func (f *fakeBackend) DeleteRoute(network.Route) error          { f.mutations++; return nil }
-func (f *fakeBackend) Rules() ([]network.Rule, error)           { return nil, nil }
-func (f *fakeBackend) AddRule(network.Rule) error               { f.mutations++; return nil }
-func (f *fakeBackend) DeleteRule(network.Rule) error            { f.mutations++; return nil }
+func (f *fakeBackend) ReplaceRoute(route network.Route) error {
+	f.mutations++
+	f.routes = append(f.routes, route)
+	return nil
+}
+func (f *fakeBackend) DeleteRoute(network.Route) error { f.mutations++; return nil }
+func (f *fakeBackend) Rules() ([]network.Rule, error)  { return nil, nil }
+func (f *fakeBackend) AddRule(rule network.Rule) error {
+	f.mutations++
+	f.rules = append(f.rules, rule)
+	return nil
+}
+func (f *fakeBackend) DeleteRule(network.Rule) error { f.mutations++; return nil }
 func appState() network.State {
 	return network.State{Interface: "eth0", Addresses: []network.Address{{Prefix: netip.MustParsePrefix("192.0.2.10/24")}, {Prefix: netip.MustParsePrefix("192.0.2.20/24")}}, OutboundSource: netip.MustParseAddr("192.0.2.10"), DefaultRoute: network.Route{Interface: "eth0", Gateway: netip.MustParseAddr("192.0.2.1"), Source: netip.MustParseAddr("192.0.2.10"), Table: 254, Metric: 50}}
 }
@@ -54,6 +72,57 @@ func TestDryRunDoesNotMutate(t *testing.T) {
 	}
 	if f.mutations != 0 {
 		t.Fatalf("mutations=%d", f.mutations)
+	}
+}
+
+func TestRoyaleSavedPoolRestoresAllThirtyAddresses(t *testing.T) {
+	current := network.State{
+		Interface: "eno1",
+		Addresses: []network.Address{
+			{Prefix: netip.MustParsePrefix("45.94.222.26/32")},
+			{Prefix: netip.MustParsePrefix("178.83.112.129/32")},
+		},
+		OutboundSource: netip.MustParseAddr("45.94.222.26"),
+		DefaultRoute:   network.Route{Interface: "eno1", Gateway: netip.MustParseAddr("45.94.222.1"), Source: netip.MustParseAddr("45.94.222.26"), Table: 254, Metric: 100},
+	}
+	desired := current
+	for last := 130; last <= 158; last++ {
+		desired.Addresses = append(desired.Addresses, network.Address{Prefix: netip.MustParsePrefix(fmt.Sprintf("178.83.112.%d/32", last))})
+	}
+	desired.ManagedRules = []network.Rule{{Source: netip.MustParsePrefix("178.83.112.130/32"), Table: 10130, Priority: 10130}}
+	f := &fakeBackend{state: current}
+	if err := New(f, "/usr/local/bin/change-ip").ApplyDesiredState(current, desired); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.added) != 29 || f.added[0].Addr() != netip.MustParseAddr("178.83.112.130") || f.added[28].Addr() != netip.MustParseAddr("178.83.112.158") {
+		t.Fatalf("restored addresses=%v", f.added)
+	}
+	if len(f.routes) == 0 || f.routes[len(f.routes)-1] != desired.DefaultRoute || len(f.rules) != 1 || f.rules[0] != desired.ManagedRules[0] {
+		t.Fatalf("routing changed incorrectly: routes=%v rules=%v", f.routes, f.rules)
+	}
+}
+
+func TestSavedPoolGuardRejectsShortenedRuntime(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "apply-eno1.json")
+	desired := network.State{Interface: "eno1", OutboundSource: netip.MustParseAddr("45.94.222.26")}
+	for last := 129; last <= 158; last++ {
+		desired.Addresses = append(desired.Addresses, network.Address{Prefix: netip.MustParsePrefix(fmt.Sprintf("178.83.112.%d/32", last))})
+	}
+	data, err := json.Marshal(persist.Config{Version: 1, State: desired})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := desired
+	target.Addresses = target.Addresses[:1]
+	if err = protectSavedAddresses(path, target); err == nil || !strings.Contains(err.Error(), "178.83.112.130/32") {
+		t.Fatalf("shortened pool was accepted: %v", err)
+	}
+	if err = protectSavedAddresses(path, desired); err != nil {
+		t.Fatalf("complete pool was rejected: %v", err)
 	}
 }
 func TestNewAddressRequiresPrefix(t *testing.T) {
